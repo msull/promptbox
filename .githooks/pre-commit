@@ -1,0 +1,17 @@
+#!/bin/sh
+# Pre-commit hook: format, lint, and test before every commit.
+# Enabled via: git config core.hooksPath .githooks
+set -e
+
+export PATH="$HOME/.cargo/bin:$PATH"
+
+echo "pre-commit: cargo fmt"
+cargo fmt --all
+# Stage any formatting changes so the commit includes them.
+git diff --name-only -- '*.rs' | xargs -r git add
+
+echo "pre-commit: cargo clippy"
+cargo clippy --all-targets --quiet -- -D warnings
+
+echo "pre-commit: cargo test"
+cargo test --quiet
