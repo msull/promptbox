@@ -35,6 +35,8 @@ pub enum Command {
     Copy,
     Send,
     StopListening,
+    /// Run the AI clean-up on the whole prompt.
+    Enhance,
     /// The speaker said "abort" after the trigger; nothing runs.
     Aborted,
     /// Trigger heard but the following words matched nothing.
@@ -56,6 +58,7 @@ impl Command {
             Self::Copy => "Copy to the clipboard, keep the text",
             Self::Send => "Copy to the clipboard and clear",
             Self::StopListening => "Stop listening",
+            Self::Enhance => "AI clean-up of the whole prompt (undoable)",
             Self::Aborted => "Cancel the command you started",
             Self::Unknown(_) => "",
         }
@@ -74,6 +77,7 @@ impl Command {
             Self::Copy => "copy".into(),
             Self::Send => "send".into(),
             Self::StopListening => "stop listening".into(),
+            Self::Enhance => "enhance".into(),
             Self::Aborted => "aborted".into(),
             Self::Unknown(w) => format!("unknown command {w:?}"),
         }
@@ -99,6 +103,8 @@ const GRAMMAR: &[(&[&str], Command)] = &[
     (&["send"], Command::Send),
     (&["stop", "listening"], Command::StopListening),
     (&["stop"], Command::StopListening),
+    (&["enhance"], Command::Enhance),
+    (&["clean", "up"], Command::Enhance),
 ];
 
 /// One help row: every spoken phrase that maps to a command, in grammar
@@ -412,6 +418,13 @@ mod tests {
                 "Zevro stop listening",
                 "",
                 vec![StopListening],
+            ),
+            ("enhance", "Zevro enhance", "", vec![Command::Enhance]),
+            (
+                "enhance alias",
+                "Zevro clean up.",
+                "",
+                vec![Command::Enhance],
             ),
             (
                 "trigger inside a word is not a trigger",

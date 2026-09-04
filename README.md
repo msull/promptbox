@@ -101,6 +101,7 @@ sentence." The **Commands** button shows this list in the app.
 | Zevro copy | Copy without clearing |
 | Zevro send | Copy and clear |
 | Zevro stop | Stop listening |
+| Zevro enhance / clean up | AI clean-up of the whole prompt (undoable) |
 | Zevro … abort | Cancel the command you started saying |
 
 Commands are extracted only from finalized utterances, so each runs exactly

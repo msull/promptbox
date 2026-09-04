@@ -583,6 +583,7 @@ impl AppCore {
             Command::Clear => AppAction::ClearPrompt,
             Command::Copy => AppAction::CopyPrompt,
             Command::Send => AppAction::SendPrompt,
+            Command::Enhance => AppAction::AiCleanUp,
             Command::StopListening => {
                 effects.push(Effect::StopListening);
                 self.show_toast("Voice: stop listening".to_owned(), false, clock.mono);
@@ -1507,6 +1508,35 @@ mod tests {
         assert!(effects.is_empty());
         assert_eq!(core.doc().committed(), "Keep me.");
         assert_eq!(toast_text(&core), "Voice: command aborted");
+    }
+
+    #[test]
+    fn voice_enhance_requests_the_ai_clean_up() {
+        let mut core = AppCore::new();
+        typed(&mut core, "um fix this", 0);
+        core.dispatch(AppAction::SessionStarted(1), Clock::at(1));
+        core.dispatch(
+            speech(1, 1, SpeechEventKind::VoiceStarted { utterance: 1 }),
+            Clock::at(2),
+        );
+        let effects = core.dispatch(
+            speech(
+                1,
+                2,
+                SpeechEventKind::Final {
+                    utterance: 1,
+                    text: "Zevro enhance".into(),
+                    confidence: None,
+                },
+            ),
+            Clock::at(3),
+        );
+        let Effect::AiRewrite(req) = &effects[0] else {
+            panic!("{effects:?}")
+        };
+        assert_eq!(req.content, "um fix this");
+        assert_eq!(req.instruction, CLEAN_UP_INSTRUCTION);
+        assert!(core.ai_busy());
     }
 
     #[test]
