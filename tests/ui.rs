@@ -166,6 +166,18 @@ fn demo_with_gap_shows_sticky_degraded_state_until_dismissed() {
 }
 
 #[test]
+fn pin_toggle_persists_always_on_top() {
+    let mut harness = harness();
+    assert!(!harness.state().always_on_top());
+    harness.get_by_label("📌").click();
+    harness.run_steps(2);
+    assert!(harness.state().always_on_top());
+    harness.get_by_label("📌").click();
+    harness.run_steps(2);
+    assert!(!harness.state().always_on_top());
+}
+
+#[test]
 fn draft_is_restored_on_startup() {
     let store = MemoryStore {
         draft: Some("unsent draft".into()),

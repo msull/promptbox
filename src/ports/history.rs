@@ -14,7 +14,17 @@ pub struct SentPrompt {
     pub project: String,
 }
 
+/// Small persisted UI preferences.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct Settings {
+    /// Keep the window above other windows.
+    #[serde(default)]
+    pub always_on_top: bool,
+}
+
 pub trait HistoryStore {
+    fn load_settings(&mut self) -> Result<Settings, String>;
+    fn save_settings(&mut self, settings: &Settings) -> Result<(), String>;
     /// Appends (or, for an existing `id`, replaces) a sent prompt.
     fn save_sent(&mut self, prompt: &SentPrompt) -> Result<(), String>;
     fn load_recent(&mut self, limit: usize) -> Result<Vec<SentPrompt>, String>;

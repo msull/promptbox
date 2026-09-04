@@ -5,7 +5,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use crate::ports::history::{HistoryStore, SentPrompt};
+use crate::ports::history::{HistoryStore, SentPrompt, Settings};
 
 pub struct FileStore {
     dir: PathBuf,
@@ -32,6 +32,10 @@ impl FileStore {
 
     fn draft_path(&self) -> PathBuf {
         self.dir.join("draft.txt")
+    }
+
+    fn settings_path(&self) -> PathBuf {
+        self.dir.join("settings.json")
     }
 
     fn write_atomic(&self, path: &Path, bytes: &[u8]) -> Result<(), String> {
@@ -64,6 +68,19 @@ impl FileStore {
 }
 
 impl HistoryStore for FileStore {
+    fn load_settings(&mut self) -> Result<Settings, String> {
+        match fs::read(self.settings_path()) {
+            Ok(bytes) => serde_json::from_slice(&bytes).map_err(|e| format!("parse settings: {e}")),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Settings::default()),
+            Err(e) => Err(format!("read settings: {e}")),
+        }
+    }
+
+    fn save_settings(&mut self, settings: &Settings) -> Result<(), String> {
+        let bytes = serde_json::to_vec_pretty(settings).map_err(|e| e.to_string())?;
+        self.write_atomic(&self.settings_path(), &bytes)
+    }
+
     fn save_sent(&mut self, prompt: &SentPrompt) -> Result<(), String> {
         let mut items = match self.read_history() {
             Ok(items) => items,
@@ -107,9 +124,19 @@ pub struct MemoryStore {
     pub draft: Option<String>,
     pub fail_sent: Option<String>,
     pub fail_draft: Option<String>,
+    pub settings: Settings,
 }
 
 impl HistoryStore for MemoryStore {
+    fn load_settings(&mut self) -> Result<Settings, String> {
+        Ok(self.settings.clone())
+    }
+
+    fn save_settings(&mut self, settings: &Settings) -> Result<(), String> {
+        self.settings = settings.clone();
+        Ok(())
+    }
+
     fn save_sent(&mut self, prompt: &SentPrompt) -> Result<(), String> {
         if let Some(e) = &self.fail_sent {
             return Err(e.clone());
@@ -167,6 +194,13 @@ mod tests {
         assert_eq!(store.load_draft().unwrap().as_deref(), Some("draft"));
         store.save_draft("").unwrap();
         assert_eq!(store.load_draft().unwrap(), None);
+        assert_eq!(store.load_settings().unwrap(), Settings::default());
+        store
+            .save_settings(&Settings {
+                always_on_top: true,
+            })
+            .unwrap();
+        assert!(store.load_settings().unwrap().always_on_top);
         assert!(!dir.path().join("nested/history.tmp").exists());
     }
 

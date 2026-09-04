@@ -62,6 +62,9 @@ on macOS): `history.json` (last 50 sent prompts), `draft.txt` (autosaved
 every 500 ms after a change), and `models/ggml-base.en.bin`.
 
 Shortcuts: ⌘L start/stop listening, ⌘↩ Send (copy and clear), ⌘⇧C Copy.
+The 📌 button pins the window above others (remembered in `settings.json`).
+Below about 460 px wide the top bar hides the project picker and Debug menu
+so the window can sit small in a corner.
 
 Status line: ○ Idle, ● Listening, ◐ Finishing (stop requested, last words
 still arriving), ▲ Degraded (audio gap or no transcript progress for 4 s of

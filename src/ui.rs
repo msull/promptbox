@@ -45,30 +45,49 @@ fn handle_shortcuts(app: &mut PromptBoxApp, ui: &mut Ui) {
     }
 }
 
+/// Below this width the top bar drops the project picker and Debug menu
+/// so the window can shrink to a corner-sized note.
+const COMPACT_WIDTH: f32 = 460.0;
+
 fn top_bar(app: &mut PromptBoxApp, ui: &mut Ui) {
+    let compact = ui.available_width() < COMPACT_WIDTH;
     ui.horizontal(|ui| {
         status_indicator(app, ui);
-        ui.separator();
-        ui.label("Project");
-        let selected = app.core().selected_project();
-        let names: Vec<String> = app
-            .core()
-            .projects()
-            .iter()
-            .map(|p| p.name.clone())
-            .collect();
-        let mut choice = selected;
-        egui::ComboBox::from_id_salt("project")
-            .selected_text(&names[selected])
-            .show_ui(ui, |ui| {
-                for (i, name) in names.iter().enumerate() {
-                    ui.selectable_value(&mut choice, i, name);
-                }
-            });
-        if choice != selected {
-            app.dispatch(AppAction::SelectProject(choice));
+        if !compact {
+            ui.separator();
+            ui.label("Project");
+            let selected = app.core().selected_project();
+            let names: Vec<String> = app
+                .core()
+                .projects()
+                .iter()
+                .map(|p| p.name.clone())
+                .collect();
+            let mut choice = selected;
+            egui::ComboBox::from_id_salt("project")
+                .selected_text(&names[selected])
+                .show_ui(ui, |ui| {
+                    for (i, name) in names.iter().enumerate() {
+                        ui.selectable_value(&mut choice, i, name);
+                    }
+                });
+            if choice != selected {
+                app.dispatch(AppAction::SelectProject(choice));
+            }
         }
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            let mut pinned = app.always_on_top();
+            if ui
+                .toggle_value(&mut pinned, "📌")
+                .on_hover_text("Pin: keep this window above others")
+                .changed()
+            {
+                app.set_always_on_top(ui.ctx(), pinned);
+            }
+            if compact {
+                listen_controls(app, ui);
+                return;
+            }
             ui.menu_button("Debug", |ui| {
                 if app.is_demo_running() {
                     if ui.button("Stop demo").clicked() {

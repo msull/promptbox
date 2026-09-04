@@ -16,7 +16,7 @@ use crate::core::action::RECENT_LIMIT;
 use crate::core::{AppAction, AppCore, Clock, Effect};
 use crate::ports::clipboard::Clipboard;
 use crate::ports::engine::{AudioChunk, EngineConfig, PushError, SpeechEngine};
-use crate::ports::history::HistoryStore;
+use crate::ports::history::{HistoryStore, Settings};
 use crate::ports::speech::SpeechEventKind;
 
 /// Audio the app will hold for a slow engine before giving up (30 s).
@@ -56,6 +56,9 @@ pub struct PromptBoxApp {
     live_chunks_seen: u64,
     /// Chunks the engine could not accept yet; retried next frame.
     backlog: std::collections::VecDeque<AudioChunk>,
+    settings: Settings,
+    /// The window level must be applied once a viewport exists.
+    window_level_applied: bool,
 }
 
 impl PromptBoxApp {
@@ -76,6 +79,10 @@ impl PromptBoxApp {
     ) -> Self {
         let recent = history.load_recent(RECENT_LIMIT);
         let draft = history.load_draft();
+        let settings = history.load_settings().unwrap_or_else(|e| {
+            log::warn!("{e}; using default settings");
+            Settings::default()
+        });
         let mut app = Self {
             core: AppCore::new(),
             clipboard,
@@ -92,6 +99,8 @@ impl PromptBoxApp {
             download: None,
             live_chunks_seen: 0,
             backlog: std::collections::VecDeque::new(),
+            settings,
+            window_level_applied: false,
         };
         app.dispatch(AppAction::RecentLoaded(recent));
         app.dispatch(AppAction::DraftLoaded(draft));
@@ -131,6 +140,34 @@ impl PromptBoxApp {
     #[must_use]
     pub fn download(&self) -> Option<&Download> {
         self.download.as_ref()
+    }
+
+    #[must_use]
+    pub fn always_on_top(&self) -> bool {
+        self.settings.always_on_top
+    }
+
+    /// Pins or unpins the window above others and remembers the choice.
+    pub fn set_always_on_top(&mut self, ctx: &egui::Context, on: bool) {
+        self.settings.always_on_top = on;
+        self.window_level_applied = false;
+        self.apply_window_level(ctx);
+        if let Err(e) = self.history.save_settings(&self.settings) {
+            log::warn!("could not save settings: {e}");
+        }
+    }
+
+    fn apply_window_level(&mut self, ctx: &egui::Context) {
+        if self.window_level_applied {
+            return;
+        }
+        self.window_level_applied = true;
+        let level = if self.settings.always_on_top {
+            egui::WindowLevel::AlwaysOnTop
+        } else {
+            egui::WindowLevel::Normal
+        };
+        ctx.send_viewport_cmd(egui::ViewportCommand::WindowLevel(level));
     }
 
     /// Skips the app clock forward (tests only; the UI never calls this).
@@ -437,6 +474,7 @@ impl PromptBoxApp {
 
 impl eframe::App for PromptBoxApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        self.apply_window_level(ui.ctx());
         if let Some(delay) = self.pump() {
             ui.ctx().request_repaint_after(delay);
         }
