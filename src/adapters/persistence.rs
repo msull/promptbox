@@ -202,6 +202,16 @@ mod tests {
             })
             .unwrap();
         assert!(store.load_settings().unwrap().always_on_top);
+        // Older settings files without newer fields still load.
+        fs::write(
+            dir.path().join("nested/settings.json"),
+            b"{\"always_on_top\":false}",
+        )
+        .unwrap();
+        assert_eq!(
+            store.load_settings().unwrap().theme,
+            crate::ports::history::ThemeChoice::Auto
+        );
         assert!(!dir.path().join("nested/history.tmp").exists());
     }
 

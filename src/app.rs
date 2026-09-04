@@ -18,7 +18,7 @@ use crate::core::{AppAction, AppCore, Clock, Effect};
 use crate::ports::ai::{RewriteResponse, Rewriter};
 use crate::ports::clipboard::Clipboard;
 use crate::ports::engine::{AudioChunk, EngineConfig, PushError, SpeechEngine};
-use crate::ports::history::{HistoryStore, Settings};
+use crate::ports::history::{HistoryStore, Settings, ThemeChoice};
 use crate::ports::speech::SpeechEventKind;
 
 /// Compact "docked" window size in points: the compact top bar, the
@@ -261,6 +261,20 @@ impl PromptBoxApp {
         });
     }
 
+    /// Applies a theme to the egui context immediately.
+    pub fn apply_theme(ctx: &egui::Context, theme: ThemeChoice) {
+        ctx.set_theme(match theme {
+            ThemeChoice::Auto => egui::ThemePreference::System,
+            ThemeChoice::Light => egui::ThemePreference::Light,
+            ThemeChoice::Dark => egui::ThemePreference::Dark,
+        });
+    }
+
+    #[must_use]
+    pub fn theme(&self) -> ThemeChoice {
+        self.settings.theme
+    }
+
     /// Saves the settings-window draft and reapplies anything it affects.
     pub fn save_settings_draft(&mut self) {
         self.settings = self.settings_draft.clone();
@@ -317,6 +331,8 @@ impl PromptBoxApp {
             return;
         }
         self.window_level_applied = true;
+        // Same once-per-viewport moment is right for the saved theme.
+        Self::apply_theme(ctx, self.settings.theme);
         let level = if self.settings.always_on_top {
             egui::WindowLevel::AlwaysOnTop
         } else {

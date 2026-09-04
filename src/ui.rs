@@ -9,6 +9,7 @@ use unicode_segmentation::UnicodeSegmentation;
 
 use crate::app::{PromptBoxApp, Recognizer};
 use crate::core::{AppAction, SessionStatus};
+use crate::ports::history::ThemeChoice;
 
 const SEND: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key::Enter);
 const COPY_ALL: KeyboardShortcut =
@@ -104,6 +105,22 @@ fn settings_window(app: &mut PromptBoxApp, ui: &mut Ui) {
                             .hint_text(crate::core::commands::DEFAULT_TRIGGER)
                             .desired_width(240.0),
                     );
+                    ui.end_row();
+                    ui.label("Appearance");
+                    ui.horizontal(|ui| {
+                        let before = app.settings_draft.theme;
+                        for (choice, label) in [
+                            (ThemeChoice::Auto, "Auto"),
+                            (ThemeChoice::Light, "Light"),
+                            (ThemeChoice::Dark, "Dark"),
+                        ] {
+                            ui.selectable_value(&mut app.settings_draft.theme, choice, label);
+                        }
+                        if app.settings_draft.theme != before {
+                            // Preview immediately; Save makes it stick.
+                            PromptBoxApp::apply_theme(ui.ctx(), app.settings_draft.theme);
+                        }
+                    });
                     ui.end_row();
                 });
             ui.add_space(6.0);

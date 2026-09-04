@@ -14,6 +14,16 @@ pub struct SentPrompt {
     pub project: String,
 }
 
+/// Light/dark appearance; `Auto` follows the system.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ThemeChoice {
+    #[default]
+    Auto,
+    Light,
+    Dark,
+}
+
 /// Small persisted UI preferences.
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct Settings {
@@ -29,6 +39,8 @@ pub struct Settings {
     /// `OpenAI` model for rewrites; empty means the built-in default.
     #[serde(default)]
     pub openai_model: String,
+    #[serde(default)]
+    pub theme: ThemeChoice,
 }
 
 pub trait HistoryStore {

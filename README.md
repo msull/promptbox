@@ -31,7 +31,8 @@ a failure leaves the prompt untouched with an error toast.
 The model is `gpt-5.6-luna` via OpenAI chat completions. The key comes
 from, in order: the key saved in **⚙ Settings**, the `OPENAI_API_KEY`
 environment variable, or a `.env` file in the working directory. Settings
-also lets you change the model and the voice trigger word, and shows the
+also lets you change the model, the voice trigger word, and the
+appearance (Auto follows the system, or Light / Dark), and shows the
 prompt/completion tokens spent this session (also logged per call).
 
 ## Voice commands

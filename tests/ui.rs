@@ -313,6 +313,22 @@ fn settings_window_saves_api_key_and_enables_ai() {
 }
 
 #[test]
+fn settings_theme_toggle_persists_after_save() {
+    use promptbox::ports::history::ThemeChoice;
+    let mut harness = harness();
+    harness.get_by_label("⚙").click();
+    harness.run_steps(2);
+    harness.get_by_label("Dark").click();
+    harness.run_steps(2);
+    assert_eq!(harness.state().settings_draft.theme, ThemeChoice::Dark);
+    assert_eq!(harness.state().theme(), ThemeChoice::Auto, "not saved yet");
+    harness.get_by_label("Save").click();
+    harness.run_steps(2);
+    assert_eq!(harness.state().theme(), ThemeChoice::Dark);
+    assert_eq!(harness.ctx.theme(), egui::Theme::Dark);
+}
+
+#[test]
 fn draft_is_restored_on_startup() {
     let store = MemoryStore {
         draft: Some("unsent draft".into()),
