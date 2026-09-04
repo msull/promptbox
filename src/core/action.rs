@@ -583,7 +583,7 @@ impl AppCore {
             Command::Clear => AppAction::ClearPrompt,
             Command::Copy => AppAction::CopyPrompt,
             Command::Send => AppAction::SendPrompt,
-            Command::Enhance => AppAction::AiCleanUp,
+            Command::CleanUp => AppAction::AiCleanUp,
             Command::StopListening => {
                 effects.push(Effect::StopListening);
                 self.show_toast("Voice: stop listening".to_owned(), false, clock.mono);
@@ -1511,7 +1511,7 @@ mod tests {
     }
 
     #[test]
-    fn voice_enhance_requests_the_ai_clean_up() {
+    fn voice_clean_up_requests_the_ai_clean_up() {
         let mut core = AppCore::new();
         typed(&mut core, "um fix this", 0);
         core.dispatch(AppAction::SessionStarted(1), Clock::at(1));
@@ -1525,7 +1525,7 @@ mod tests {
                 2,
                 SpeechEventKind::Final {
                     utterance: 1,
-                    text: "Zevro enhance".into(),
+                    text: "Zevro clean up".into(),
                     confidence: None,
                 },
             ),
