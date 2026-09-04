@@ -68,6 +68,47 @@ fn ai_row(app: &mut PromptBoxApp, ui: &mut Ui) {
     });
 }
 
+/// The paste-into-app options for Send, with the Accessibility status.
+fn send_settings(app: &mut PromptBoxApp, ui: &mut Ui) {
+    ui.vertical(|ui| {
+        let mut on = app.settings().type_on_send;
+        if ui
+            .checkbox(&mut on, "Paste into the focused app (⌘V)")
+            .on_hover_text(
+                "Only when another app is in front, e.g. after \"Zevro send\". \
+                 From this window Send just copies.",
+            )
+            .changed()
+        {
+            app.set_type_on_send(on);
+        }
+        let mut submit = app.settings().submit_after_paste;
+        if ui
+            .add_enabled(
+                on,
+                egui::Checkbox::new(&mut submit, "Press Return afterwards"),
+            )
+            .changed()
+        {
+            app.set_submit_after_paste(submit);
+        }
+        ui.horizontal(|ui| {
+            if app.typing_permission_granted() {
+                ui.label(RichText::new("Accessibility: granted").weak().small());
+            } else {
+                ui.label(
+                    RichText::new("Accessibility: not granted")
+                        .color(ui.visuals().error_fg_color)
+                        .small(),
+                );
+                if ui.small_button("Request…").clicked() {
+                    app.request_typing_permission();
+                }
+            }
+        });
+    });
+}
+
 fn settings_window(app: &mut PromptBoxApp, ui: &mut Ui) {
     if !app.show_settings {
         return;
@@ -105,6 +146,9 @@ fn settings_window(app: &mut PromptBoxApp, ui: &mut Ui) {
                             .hint_text(crate::core::commands::DEFAULT_TRIGGER)
                             .desired_width(240.0),
                     );
+                    ui.end_row();
+                    ui.label("Send");
+                    send_settings(app, ui);
                     ui.end_row();
                     ui.label("Appearance");
                     ui.horizontal(|ui| {

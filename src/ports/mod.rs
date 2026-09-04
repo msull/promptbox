@@ -5,3 +5,4 @@ pub mod clipboard;
 pub mod engine;
 pub mod history;
 pub mod speech;
+pub mod typist;

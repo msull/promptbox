@@ -8,3 +8,4 @@ pub mod model;
 pub mod openai;
 pub mod persistence;
 pub mod speech;
+pub mod typist;

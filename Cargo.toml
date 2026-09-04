@@ -19,6 +19,7 @@ anyhow = "1"
 arboard = "3.6"
 cpal = "0.18"
 directories = "6"
+enigo = "0.6"
 eframe = "0.36"
 egui = "0.36"
 env_logger = "0.11"
@@ -32,6 +33,7 @@ ureq = "3"
 whisper-rs = { version = "0.16", features = ["log_backend"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
+macos-accessibility-client = "0.0.2"
 whisper-rs = { version = "0.16", features = ["log_backend", "metal"] }
 
 [dev-dependencies]

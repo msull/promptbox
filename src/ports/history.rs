@@ -25,7 +25,7 @@ pub enum ThemeChoice {
 }
 
 /// Small persisted UI preferences.
-#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Settings {
     /// Keep the window above other windows.
     #[serde(default)]
@@ -41,6 +41,30 @@ pub struct Settings {
     pub openai_model: String,
     #[serde(default)]
     pub theme: ThemeChoice,
+    /// Send pastes the prompt into the focused app (needs Accessibility).
+    #[serde(default = "default_true")]
+    pub type_on_send: bool,
+    /// Press Return after pasting.
+    #[serde(default = "default_true")]
+    pub submit_after_paste: bool,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+impl Default for Settings {
+    fn default() -> Self {
+        Self {
+            always_on_top: false,
+            trigger: String::new(),
+            openai_api_key: String::new(),
+            openai_model: String::new(),
+            theme: ThemeChoice::default(),
+            type_on_send: true,
+            submit_after_paste: true,
+        }
+    }
 }
 
 pub trait HistoryStore {

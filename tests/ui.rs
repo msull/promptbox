@@ -12,15 +12,17 @@ use promptbox::PromptBoxApp;
 use promptbox::adapters::clipboard::FakeClipboard;
 use promptbox::adapters::openai::FakeRewriter;
 use promptbox::adapters::persistence::MemoryStore;
+use promptbox::adapters::typist::FakeTypist;
 use promptbox::core::SessionStatus;
 use std::sync::Arc;
 
 fn harness_with(clipboard: FakeClipboard, store: MemoryStore) -> Harness<'static, PromptBoxApp> {
-    Harness::new_eframe(move |_cc| {
-        PromptBoxApp::with_services(Box::new(clipboard), Box::new(store))
-    })
+    // Tall enough that the Settings window, including its Save button, is
+    // on screen for clicks.
+    Harness::builder()
+        .with_size(egui::vec2(900.0, 900.0))
+        .build_eframe(move |_cc| PromptBoxApp::with_services(Box::new(clipboard), Box::new(store)))
 }
-
 fn harness() -> Harness<'static, PromptBoxApp> {
     harness_with(FakeClipboard::default(), MemoryStore::default())
 }
@@ -304,7 +306,9 @@ fn ai_instruction_box_sends_and_failure_keeps_prompt() {
 fn settings_window_saves_api_key_and_enables_ai() {
     let mut harness = harness();
     harness.get_by_label("⚙").click();
-    harness.run_steps(2);
+    // The window's grid needs a few frames to settle before its widgets
+    // stop moving.
+    harness.run_steps(4);
     harness.state_mut().settings_draft.openai_api_key = "sk-test".into();
     harness.get_by_label("Save").click();
     harness.run_steps(2);
@@ -317,7 +321,9 @@ fn settings_theme_toggle_applies_and_persists_immediately() {
     use promptbox::ports::history::ThemeChoice;
     let mut harness = harness();
     harness.get_by_label("⚙").click();
-    harness.run_steps(2);
+    // The window's grid needs a few frames to settle before its widgets
+    // stop moving.
+    harness.run_steps(4);
     harness.get_by_label("Dark").click();
     harness.run_steps(2);
     assert_eq!(harness.state().theme(), ThemeChoice::Dark, "no Save needed");
@@ -349,6 +355,58 @@ fn saved_theme_is_applied_at_launch() {
     let mut harness = harness_with(FakeClipboard::default(), store);
     harness.run_steps(2);
     assert_eq!(harness.ctx.theme(), egui::Theme::Light);
+}
+
+fn granted_typist() -> Box<dyn promptbox::ports::typist::Typist> {
+    Box::new(FakeTypist {
+        granted: true,
+        ..Default::default()
+    })
+}
+
+#[test]
+fn send_from_our_own_window_copies_without_typing() {
+    let mut harness = harness();
+    harness.state_mut().set_typist(granted_typist());
+    type_prompt(&mut harness, "hello");
+    harness.get_by_label("Send →").click();
+    harness.run_steps(2);
+    harness.get_by_label("Prompt copied");
+    assert_eq!(harness.state().core().doc().committed(), "");
+}
+
+#[test]
+fn send_while_another_app_is_focused_pastes_and_submits() {
+    let mut harness = harness();
+    harness.state_mut().set_typist(granted_typist());
+    type_prompt(&mut harness, "hello");
+    harness.state_mut().set_window_focused(false);
+    harness
+        .state_mut()
+        .dispatch(promptbox::core::AppAction::SendPrompt);
+    harness.run_steps(2);
+    harness.get_by_label("Prompt sent");
+    assert_eq!(harness.state().core().doc().committed(), "");
+}
+
+#[test]
+fn send_without_accessibility_keeps_the_prompt() {
+    let mut harness = harness();
+    harness.state_mut().set_typist(Box::new(FakeTypist {
+        granted: false,
+        fail_with: Some("Accessibility permission not granted".into()),
+        ..Default::default()
+    }));
+    type_prompt(&mut harness, "hello");
+    harness.state_mut().set_window_focused(false);
+    harness
+        .state_mut()
+        .dispatch(promptbox::core::AppAction::SendPrompt);
+    harness.run_steps(2);
+    assert_eq!(harness.state().core().doc().committed(), "hello");
+    harness.get_by_label(
+        "Copied, but could not type into the app: Accessibility permission not granted. Prompt kept.",
+    );
 }
 
 #[test]

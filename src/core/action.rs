@@ -85,6 +85,11 @@ pub enum AppAction {
         id: u64,
         result: Result<(), String>,
     },
+    /// Result of pasting into the focused app after a Send.
+    TypeFinished {
+        id: u64,
+        result: Result<(), String>,
+    },
     DraftSaveFinished(Result<(), String>),
     DraftLoaded(Result<Option<String>, String>),
     RecentLoaded(Result<Vec<SentPrompt>, String>),
@@ -122,6 +127,11 @@ pub enum Effect {
     StopListening,
     /// Run this rewrite on a worker and report back with `AiRewriteFinished`.
     AiRewrite(RewriteRequest),
+    /// Paste the clipboard into the focused app; `submit` presses Return.
+    TypeIntoActiveApp {
+        id: u64,
+        submit: bool,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -136,6 +146,24 @@ struct Pending {
     snapshot: SentPrompt,
     clipboard: Option<Result<(), String>>,
     history: Option<Result<(), String>>,
+    typing: TypingStage,
+}
+
+/// Progress of the optional paste-into-app stage of a Send.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum TypingStage {
+    NotWanted,
+    /// Enabled for this send; requested once both stores succeed.
+    Wanted,
+    Requested,
+    Done(Result<(), String>),
+}
+
+/// Whether Send should also paste into the focused app, decided per send.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TypingPolicy {
+    pub enabled: bool,
+    pub submit: bool,
 }
 
 #[derive(Debug)]
@@ -159,6 +187,7 @@ pub struct AppCore {
     ai_pending: Option<u64>,
     ai_prompt_tokens: u64,
     ai_completion_tokens: u64,
+    typing: TypingPolicy,
 }
 
 impl Default for AppCore {
@@ -190,6 +219,10 @@ impl AppCore {
             ai_pending: None,
             ai_prompt_tokens: 0,
             ai_completion_tokens: 0,
+            typing: TypingPolicy {
+                enabled: false,
+                submit: true,
+            },
         }
     }
 
@@ -234,6 +267,12 @@ impl AppCore {
     #[must_use]
     pub fn is_listening(&self) -> bool {
         self.active_session.is_some()
+    }
+
+    /// Set by the app each frame: typing is only sensible when another app
+    /// is focused and the user has enabled it.
+    pub fn set_typing_policy(&mut self, policy: TypingPolicy) {
+        self.typing = policy;
     }
 
     /// True while an AI rewrite is in flight.
@@ -353,7 +392,7 @@ impl AppCore {
                 if let Some(p) = &mut self.pending {
                     p.clipboard = Some(result);
                 }
-                self.settle_pending(now.mono);
+                self.settle_pending(now.mono, &mut effects);
             }
             AppAction::HistorySaveFinished { id, result } => {
                 if let Some(p) = &mut self.pending
@@ -361,7 +400,16 @@ impl AppCore {
                 {
                     p.history = Some(result);
                 }
-                self.settle_pending(now.mono);
+                self.settle_pending(now.mono, &mut effects);
+            }
+            AppAction::TypeFinished { id, result } => {
+                if let Some(p) = &mut self.pending
+                    && p.snapshot.id == id
+                    && p.typing == TypingStage::Requested
+                {
+                    p.typing = TypingStage::Done(result);
+                }
+                self.settle_pending(now.mono, &mut effects);
             }
             AppAction::DraftSaveFinished(Err(e)) => {
                 self.show_toast(format!("Draft autosave failed: {e}"), true, now.mono);
@@ -668,26 +716,60 @@ impl AppCore {
         if kind == PendingKind::Send {
             effects.push(Effect::SaveHistory(snapshot.clone()));
         }
+        let typing = if kind == PendingKind::Send && self.typing.enabled {
+            TypingStage::Wanted
+        } else {
+            TypingStage::NotWanted
+        };
         self.pending = Some(Pending {
             kind,
             snapshot,
             clipboard: None,
             history: None,
+            typing,
         });
     }
 
-    fn settle_pending(&mut self, now: Duration) {
-        let Some(p) = &self.pending else { return };
-        let done = match p.kind {
+    fn settle_pending(&mut self, now: Duration, effects: &mut Vec<Effect>) {
+        let Some(p) = &mut self.pending else { return };
+        let stored = match p.kind {
             PendingKind::Copy => p.clipboard.is_some(),
             PendingKind::Send => p.clipboard.is_some() && p.history.is_some(),
         };
-        if !done {
+        if !stored {
             return;
+        }
+        // Typing is the third stage: only once clipboard and history both
+        // succeeded, and requested exactly once.
+        if p.clipboard == Some(Ok(())) && p.history == Some(Ok(())) {
+            match p.typing {
+                TypingStage::Wanted => {
+                    p.typing = TypingStage::Requested;
+                    effects.push(Effect::TypeIntoActiveApp {
+                        id: p.snapshot.id,
+                        submit: self.typing.submit,
+                    });
+                    return;
+                }
+                TypingStage::Requested => return,
+                TypingStage::NotWanted | TypingStage::Done(_) => {}
+            }
         }
         let p = self.pending.take().expect("checked above");
         let clipboard = p.clipboard.unwrap_or(Ok(()));
         let history = p.history.unwrap_or(Ok(()));
+        if let TypingStage::Done(Err(e)) = &p.typing
+            && clipboard.is_ok()
+            && history.is_ok()
+        {
+            self.show_toast(
+                format!("Copied, but could not type into the app: {e}. Prompt kept."),
+                true,
+                now,
+            );
+            return;
+        }
+        let typed = p.typing == TypingStage::Done(Ok(()));
         match (p.kind, clipboard, history) {
             (PendingKind::Copy, Ok(()), _) => self.show_toast("Copied".to_owned(), false, now),
             (PendingKind::Copy, Err(e), _) => {
@@ -699,7 +781,12 @@ impl AppCore {
                 self.mark_dirty(now);
                 self.recent.insert(0, p.snapshot);
                 self.recent.truncate(RECENT_LIMIT);
-                self.show_toast("Prompt copied".to_owned(), false, now);
+                let msg = if typed {
+                    "Prompt sent"
+                } else {
+                    "Prompt copied"
+                };
+                self.show_toast(msg.to_owned(), false, now);
             }
             (PendingKind::Send, Err(e), _) => {
                 self.show_toast(format!("Send failed: {e}. Prompt kept."), true, now);
@@ -866,6 +953,117 @@ mod tests {
             let effects = core.dispatch(AppAction::SendPrompt, Clock::at(4));
             assert_eq!(effects.is_empty(), core.doc().committed().is_empty());
         }
+    }
+
+    fn settle_stores(core: &mut AppCore, id: u64, at: u64) -> Vec<Effect> {
+        core.dispatch(AppAction::ClipboardWriteFinished(Ok(())), Clock::at(at));
+        core.dispatch(
+            AppAction::HistorySaveFinished { id, result: Ok(()) },
+            Clock::at(at + 1),
+        )
+    }
+
+    #[test]
+    fn send_with_typing_pastes_only_after_both_stores_succeed_then_clears() {
+        let mut core = AppCore::new();
+        core.set_typing_policy(TypingPolicy {
+            enabled: true,
+            submit: true,
+        });
+        typed(&mut core, "hello", 0);
+        let effects = core.dispatch(AppAction::SendPrompt, Clock::at(1));
+        let Effect::SaveHistory(s) = &effects[1] else {
+            panic!()
+        };
+        let id = s.id;
+        assert!(
+            !effects
+                .iter()
+                .any(|e| matches!(e, Effect::TypeIntoActiveApp { .. }))
+        );
+        core.dispatch(AppAction::ClipboardWriteFinished(Ok(())), Clock::at(2));
+        assert_eq!(core.doc().committed(), "hello");
+        let effects = core.dispatch(
+            AppAction::HistorySaveFinished { id, result: Ok(()) },
+            Clock::at(3),
+        );
+        assert_eq!(
+            effects,
+            vec![Effect::TypeIntoActiveApp { id, submit: true }]
+        );
+        assert!(core.is_busy());
+        assert_eq!(core.doc().committed(), "hello", "not cleared until typed");
+        let effects = core.dispatch(
+            AppAction::HistorySaveFinished { id, result: Ok(()) },
+            Clock::at(4),
+        );
+        assert!(effects.is_empty(), "typing requested once");
+        core.dispatch(AppAction::TypeFinished { id, result: Ok(()) }, Clock::at(5));
+        assert!(!core.is_busy());
+        assert_eq!(core.doc().committed(), "");
+        assert_eq!(toast_text(&core), "Prompt sent");
+    }
+
+    #[test]
+    fn typing_failure_keeps_the_prompt_and_store_failure_skips_typing() {
+        let mut core = AppCore::new();
+        core.set_typing_policy(TypingPolicy {
+            enabled: true,
+            submit: false,
+        });
+        typed(&mut core, "keep", 0);
+        let effects = core.dispatch(AppAction::SendPrompt, Clock::at(1));
+        let Effect::SaveHistory(s) = &effects[1] else {
+            panic!()
+        };
+        let id = s.id;
+        let effects = settle_stores(&mut core, id, 2);
+        assert_eq!(
+            effects,
+            vec![Effect::TypeIntoActiveApp { id, submit: false }]
+        );
+        core.dispatch(
+            AppAction::TypeFinished {
+                id,
+                result: Err("no permission".into()),
+            },
+            Clock::at(4),
+        );
+        assert!(!core.is_busy());
+        assert_eq!(core.doc().committed(), "keep");
+        assert!(toast_text(&core).contains("no permission"));
+        assert!(core.recent().is_empty());
+
+        let effects = core.dispatch(AppAction::SendPrompt, Clock::at(10_000));
+        let Effect::SaveHistory(s) = &effects[1] else {
+            panic!()
+        };
+        let id = s.id;
+        core.dispatch(
+            AppAction::ClipboardWriteFinished(Err("x".into())),
+            Clock::at(10_001),
+        );
+        let effects = core.dispatch(
+            AppAction::HistorySaveFinished { id, result: Ok(()) },
+            Clock::at(10_002),
+        );
+        assert!(effects.is_empty(), "no typing after a store failure");
+        assert!(!core.is_busy());
+        assert_eq!(core.doc().committed(), "keep");
+    }
+
+    #[test]
+    fn typing_disabled_keeps_the_two_stage_send() {
+        let mut core = AppCore::new();
+        typed(&mut core, "plain", 0);
+        let effects = core.dispatch(AppAction::SendPrompt, Clock::at(1));
+        let Effect::SaveHistory(s) = &effects[1] else {
+            panic!()
+        };
+        let effects = settle_stores(&mut core, s.id, 2);
+        assert!(effects.is_empty());
+        assert_eq!(core.doc().committed(), "");
+        assert_eq!(toast_text(&core), "Prompt copied");
     }
 
     #[test]

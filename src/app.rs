@@ -13,13 +13,16 @@ use crate::adapters::model::{self, DEFAULT_MODEL, Download};
 use crate::adapters::openai::{self, OpenAiRewriter};
 use crate::adapters::persistence::FileStore;
 use crate::adapters::speech::WhisperEngine;
+use crate::adapters::typist::SystemTypist;
 use crate::core::action::RECENT_LIMIT;
+use crate::core::action::TypingPolicy;
 use crate::core::{AppAction, AppCore, Clock, Effect};
 use crate::ports::ai::{RewriteResponse, Rewriter};
 use crate::ports::clipboard::Clipboard;
 use crate::ports::engine::{AudioChunk, EngineConfig, PushError, SpeechEngine};
 use crate::ports::history::{HistoryStore, Settings, ThemeChoice};
 use crate::ports::speech::SpeechEventKind;
+use crate::ports::typist::Typist;
 
 /// Compact "docked" window size in points: the compact top bar, the
 /// bottom bar, roughly 200 px of prompt, and a little room below it.
@@ -116,16 +119,21 @@ pub struct PromptBoxApp {
     pub settings_draft: Settings,
     rewriter: Option<std::sync::Arc<dyn Rewriter>>,
     ai_rx: Option<Receiver<(u64, Result<RewriteResponse, String>)>>,
+    typist: Box<dyn Typist>,
+    /// Whether our own window is focused this frame (from egui).
+    window_focused: bool,
 }
 
 impl PromptBoxApp {
     /// Production wiring: system clipboard and the platform data directory.
     #[must_use]
     pub fn new(_cc: &eframe::CreationContext<'_>) -> Self {
-        Self::with_services(
+        let mut app = Self::with_services(
             Box::new(SystemClipboard::default()),
             Box::new(FileStore::new(FileStore::default_dir())),
-        )
+        );
+        app.typist = Box::new(SystemTypist::default());
+        app
     }
 
     /// Wires explicit adapters (tests use fakes) and loads persisted state.
@@ -165,6 +173,8 @@ impl PromptBoxApp {
             settings_draft: Settings::default(),
             rewriter: None,
             ai_rx: None,
+            typist: Box::new(crate::adapters::typist::FakeTypist::default()),
+            window_focused: true,
         };
         app.settings_draft = app.settings.clone();
         app.rebuild_rewriter();
@@ -212,6 +222,59 @@ impl PromptBoxApp {
     #[must_use]
     pub fn always_on_top(&self) -> bool {
         self.settings.always_on_top
+    }
+
+    /// Installs a typist directly (tests use a fake).
+    pub fn set_typist(&mut self, typist: Box<dyn Typist>) {
+        self.typist = typist;
+    }
+
+    #[must_use]
+    pub fn typing_permission_granted(&self) -> bool {
+        self.typist.permission_granted()
+    }
+
+    pub fn request_typing_permission(&self) {
+        self.typist.request_permission();
+    }
+
+    #[must_use]
+    pub fn settings(&self) -> &Settings {
+        &self.settings
+    }
+
+    /// Typing-related settings persist immediately, like the theme.
+    pub fn set_type_on_send(&mut self, on: bool) {
+        self.settings.type_on_send = on;
+        self.settings_draft.type_on_send = on;
+        self.persist_settings();
+    }
+
+    pub fn set_submit_after_paste(&mut self, on: bool) {
+        self.settings.submit_after_paste = on;
+        self.settings_draft.submit_after_paste = on;
+        self.persist_settings();
+    }
+
+    fn persist_settings(&mut self) {
+        if let Err(e) = self.history.save_settings(&self.settings) {
+            log::warn!("could not save settings: {e}");
+        }
+    }
+
+    /// Typing only makes sense when another app has focus; from our own
+    /// window a Send would paste back into Prompt Box.
+    fn typing_policy(&self) -> TypingPolicy {
+        TypingPolicy {
+            enabled: self.settings.type_on_send && !self.window_focused,
+            submit: self.settings.submit_after_paste,
+        }
+    }
+
+    /// Records whether our window is focused this frame.
+    pub fn set_window_focused(&mut self, focused: bool) {
+        self.window_focused = focused;
+        self.core.set_typing_policy(self.typing_policy());
     }
 
     /// Installs a rewriter directly (tests use a fake).
@@ -384,6 +447,10 @@ impl PromptBoxApp {
                     self.stop_listening();
                     continue;
                 }
+                Effect::TypeIntoActiveApp { id, submit } => AppAction::TypeFinished {
+                    id,
+                    result: self.typist.paste_and_submit(submit),
+                },
                 Effect::AiRewrite(request) => {
                     let Some(rewriter) = self.rewriter.clone() else {
                         self.dispatch(AppAction::AiRewriteFinished {
@@ -562,6 +629,7 @@ impl PromptBoxApp {
     /// Called once per frame: moves audio into the engine, drains speech
     /// events, ticks the clock. Returns how soon a repaint is wanted.
     pub fn pump(&mut self) -> Option<Duration> {
+        self.core.set_typing_policy(self.typing_policy());
         self.pump_recognizer_load();
         self.pump_ai();
         self.pump_download();
@@ -714,6 +782,8 @@ impl PromptBoxApp {
 impl eframe::App for PromptBoxApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         self.apply_window_level(ui.ctx());
+        let focused = ui.ctx().input(|i| i.viewport().focused.unwrap_or(true));
+        self.set_window_focused(focused);
         if let Some(delay) = self.pump() {
             ui.ctx().request_repaint_after(delay);
         }
