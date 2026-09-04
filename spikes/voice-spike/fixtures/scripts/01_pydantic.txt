@@ -1,0 +1,1 @@
+Add a Pydantic model for the DynamoDB item and use a conditional expression so the write isn't overwritten.

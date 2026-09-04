@@ -1,0 +1,1 @@
+In the egui app, move the transcript state out of the ui method into an AppCore struct, and make the whisper.cpp worker send speech events over a bounded channel instead of mutating the document directly.

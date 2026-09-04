@@ -1,0 +1,1 @@
+In the Acme project, the Univer Sheets import should go through FastHTML and validate each row with Pydantic before writing to DynamoDB. Add a correction rule so that "you never sheets" becomes Univer Sheets.

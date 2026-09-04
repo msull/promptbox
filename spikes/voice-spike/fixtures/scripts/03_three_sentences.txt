@@ -1,0 +1,1 @@
+We should update the DynamoDB model so that the conditional write prevents two workers from updating the same record at once. [[slnc 800]] Then I think we should also move that validation down into the service layer. [[slnc 800]] Add unit tests for both cases before you refactor anything.
