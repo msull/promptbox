@@ -50,7 +50,8 @@ fn commands_popup(app: &mut PromptBoxApp, ui: &mut Ui) {
         .show(ui.ctx(), |ui| {
             ui.label(format!(
                 "Say \"{trigger}\" then a command, at the end of a sentence or on its own. \
-                 Whole-command utterances ignore any garbled tail."
+                 Whole-command utterances ignore any garbled tail. \
+                 Say \"abort\" after the trigger to cancel a command before it runs."
             ));
             ui.add_space(6.0);
             egui::Grid::new("commands-grid")

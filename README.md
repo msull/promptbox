@@ -27,6 +27,7 @@ its own: "…move it into the service layer. Zevro delete sentence."
 | Zevro copy | Copy without clearing |
 | Zevro send | Copy and clear |
 | Zevro stop | Stop listening |
+| Zevro … abort | Cancel the command you started saying |
 
 Commands are extracted only from finalized utterances, so each runs exactly
 once. While you are still speaking, the command words show in amber inside

@@ -481,6 +481,10 @@ impl AppCore {
                 self.show_toast("Voice: stop listening".to_owned(), false, clock.mono);
                 return;
             }
+            Command::Aborted => {
+                self.show_toast("Voice: command aborted".to_owned(), false, clock.mono);
+                return;
+            }
             Command::Unknown(heard) => {
                 let msg = if heard.is_empty() {
                     format!("Heard \"{}\" with no command", self.trigger)
@@ -1192,6 +1196,32 @@ mod tests {
             Clock::at(5),
         );
         assert!(effects.contains(&Effect::StopListening));
+    }
+
+    #[test]
+    fn aborted_voice_command_changes_nothing() {
+        let mut core = AppCore::new();
+        typed(&mut core, "Keep me.", 0);
+        core.dispatch(AppAction::SessionStarted(1), Clock::at(1));
+        core.dispatch(
+            speech(1, 1, SpeechEventKind::VoiceStarted { utterance: 1 }),
+            Clock::at(2),
+        );
+        let effects = core.dispatch(
+            speech(
+                1,
+                2,
+                SpeechEventKind::Final {
+                    utterance: 1,
+                    text: "Zevro clear abort".into(),
+                    confidence: None,
+                },
+            ),
+            Clock::at(3),
+        );
+        assert!(effects.is_empty());
+        assert_eq!(core.doc().committed(), "Keep me.");
+        assert_eq!(toast_text(&core), "Voice: command aborted");
     }
 
     #[test]

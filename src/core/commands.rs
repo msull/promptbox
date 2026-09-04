@@ -14,11 +14,14 @@
 //! "Zev Bro" and "zebbro" for "Zevro". "zero" keys to "zr" and never
 //! matches. An utterance that *starts* with the trigger is treated as a
 //! command only: words after the command phrase are ignored, so a garbled
-//! "delete laughs" still deletes the sentence.
+//! "delete laughs" still deletes the sentence. Saying "abort" anywhere after
+//! the trigger cancels that command before it takes effect.
 
 use std::ops::Range;
 
 pub const DEFAULT_TRIGGER: &str = "zevro";
+/// Said after the trigger, cancels the command being spoken.
+pub const ABORT_WORD: &str = "abort";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Command {
@@ -32,6 +35,8 @@ pub enum Command {
     Copy,
     Send,
     StopListening,
+    /// The speaker said "abort" after the trigger; nothing runs.
+    Aborted,
     /// Trigger heard but the following words matched nothing.
     Unknown(String),
 }
@@ -51,6 +56,7 @@ impl Command {
             Self::Copy => "Copy to the clipboard, keep the text",
             Self::Send => "Copy to the clipboard and clear",
             Self::StopListening => "Stop listening",
+            Self::Aborted => "Cancel the command you started",
             Self::Unknown(_) => "",
         }
     }
@@ -68,6 +74,7 @@ impl Command {
             Self::Copy => "copy".into(),
             Self::Send => "send".into(),
             Self::StopListening => "stop listening".into(),
+            Self::Aborted => "aborted".into(),
             Self::Unknown(w) => format!("unknown command {w:?}"),
         }
     }
@@ -238,6 +245,15 @@ pub fn extract(text: &str, trigger: &str) -> Extraction {
             dictation_parts.push(before);
         }
         let after = i + span;
+        let segment_end = next_trigger(&tokens, after, &trigger_key);
+        // "abort" anywhere before the next trigger cancels this command.
+        if let Some(k) = (after..segment_end).find(|&k| close_enough(ABORT_WORD, &tokens[k].norm)) {
+            commands.push(Command::Aborted);
+            let last = if command_only { segment_end - 1 } else { k };
+            keep_from = tokens[last].range.end;
+            i = last + 1;
+            continue;
+        }
         let (cmd, mut used) = match_command(&tokens[after..], &trigger_key);
         if command_only && !matches!(cmd, Command::Unknown(_)) {
             // Whole utterance is a command: swallow any garbled tail up to
@@ -432,6 +448,29 @@ mod tests {
         }
         // Known miss: a different first consonant is not the trigger.
         assert!(x("rebro copy").commands.is_empty());
+    }
+
+    #[test]
+    fn abort_cancels_the_command_being_spoken() {
+        use Command::{Aborted, Send};
+        let cases: Vec<(&str, &str, Vec<Command>)> = vec![
+            ("Zevro delete sentence abort", "", vec![Aborted]),
+            ("Zevro abort", "", vec![Aborted]),
+            ("Zevro send abort no wait", "", vec![Aborted]),
+            ("Zebro delete abort.", "", vec![Aborted]),
+            (
+                "Keep this. Zevro send abort and carry on",
+                "Keep this. and carry on",
+                vec![Aborted],
+            ),
+            ("Zevro send abort zevro send", "", vec![Aborted, Send]),
+            ("Zevro send", "", vec![Send]),
+        ];
+        for (heard, dictation, want) in cases {
+            let got = x(heard);
+            assert_eq!(got.commands, want, "{heard:?}");
+            assert_eq!(got.dictation, dictation, "{heard:?}");
+        }
     }
 
     #[test]
