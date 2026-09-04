@@ -233,6 +233,20 @@ fn shift_enter_starts_a_new_paragraph() {
 }
 
 #[test]
+fn commands_button_opens_the_voice_command_list() {
+    let mut harness = harness();
+    harness.get_by_label("Commands").click();
+    harness.run_steps(2);
+    harness.get_by_label("Voice commands");
+    harness.get_by_label("Delete the last sentence");
+    harness.get_by_label("Copy to the clipboard and clear");
+    assert!(harness.state().show_commands);
+    harness.get_by_label("Commands").click();
+    harness.run_steps(2);
+    assert!(!harness.state().show_commands);
+}
+
+#[test]
 fn draft_is_restored_on_startup() {
     let store = MemoryStore {
         draft: Some("unsent draft".into()),

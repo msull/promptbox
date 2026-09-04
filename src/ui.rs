@@ -29,6 +29,57 @@ pub fn draw(app: &mut PromptBoxApp, ui: &mut Ui) {
     egui::Panel::top("top").show(ui, |ui| top_bar(app, ui));
     egui::Panel::bottom("bottom").show(ui, |ui| bottom_bar(app, ui));
     egui::CentralPanel::default().show(ui, |ui| editor(app, ui));
+    commands_popup(app, ui);
+}
+
+/// Floating list of voice commands, built from the parser's grammar.
+fn commands_popup(app: &mut PromptBoxApp, ui: &mut Ui) {
+    if !app.show_commands {
+        return;
+    }
+    let mut trigger = app.core().trigger().to_owned();
+    if let Some(first) = trigger.get_mut(0..1) {
+        first.make_ascii_uppercase();
+    }
+    let mut open = true;
+    egui::Window::new("Voice commands")
+        .open(&mut open)
+        .collapsible(false)
+        .resizable(false)
+        .default_width(360.0)
+        .show(ui.ctx(), |ui| {
+            ui.label(format!(
+                "Say \"{trigger}\" then a command, at the end of a sentence or on its own. \
+                 Whole-command utterances ignore any garbled tail."
+            ));
+            ui.add_space(6.0);
+            egui::Grid::new("commands-grid")
+                .num_columns(2)
+                .spacing([18.0, 4.0])
+                .striped(true)
+                .show(ui, |ui| {
+                    for entry in crate::core::commands::help_entries() {
+                        let phrases = entry
+                            .phrases
+                            .iter()
+                            .map(|p| format!("{trigger} {p}"))
+                            .collect::<Vec<_>>()
+                            .join("  /  ");
+                        ui.label(RichText::new(phrases).monospace());
+                        ui.label(entry.command.description());
+                        ui.end_row();
+                    }
+                });
+            ui.add_space(6.0);
+            ui.label(
+                RichText::new(
+                    "Small slips are tolerated (\"sand\" for send, \"Zebro\" for the trigger).",
+                )
+                .weak()
+                .small(),
+            );
+        });
+    app.show_commands = open;
 }
 
 /// Shortcuts are consumed before the text box sees them, so the document's
@@ -294,6 +345,13 @@ fn bottom_bar(app: &mut PromptBoxApp, ui: &mut Ui) {
             .clicked()
         {
             app.dispatch(AppAction::SendPrompt);
+        }
+        if ui
+            .selectable_label(app.show_commands, "Commands")
+            .on_hover_text("Show the voice commands")
+            .clicked()
+        {
+            app.show_commands = !app.show_commands;
         }
         if let Some(toast) = app.core().toast() {
             let mut text = RichText::new(&toast.text);

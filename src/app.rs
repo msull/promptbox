@@ -78,6 +78,7 @@ struct LiveSession {
     audio_rx: Receiver<AudioChunk>,
 }
 
+#[allow(clippy::struct_excessive_bools)] // independent lifecycle flags
 pub struct PromptBoxApp {
     core: AppCore,
     clipboard: Box<dyn Clipboard>,
@@ -103,6 +104,8 @@ pub struct PromptBoxApp {
     window_level_applied: bool,
     /// Corner the window was last docked to; `None` until first use.
     docked_corner: Option<Corner>,
+    /// Whether the voice-command help popup is open.
+    pub show_commands: bool,
 }
 
 impl PromptBoxApp {
@@ -146,6 +149,7 @@ impl PromptBoxApp {
             settings,
             window_level_applied: false,
             docked_corner: None,
+            show_commands: false,
         };
         app.core.set_trigger(&app.settings.trigger);
         app.dispatch(AppAction::RecentLoaded(recent));

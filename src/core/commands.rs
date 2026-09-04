@@ -37,6 +37,24 @@ pub enum Command {
 }
 
 impl Command {
+    /// What the command does, for the help popup.
+    #[must_use]
+    pub fn description(&self) -> &'static str {
+        match self {
+            Self::DeleteSentence => "Delete the last sentence",
+            Self::DeleteParagraph => "Delete the last paragraph",
+            Self::Undo => "Undo the last change",
+            Self::Redo => "Redo",
+            Self::Newline => "Insert a line break",
+            Self::NewParagraph => "Start a new paragraph",
+            Self::Clear => "Clear the prompt (undoable)",
+            Self::Copy => "Copy to the clipboard, keep the text",
+            Self::Send => "Copy to the clipboard and clear",
+            Self::StopListening => "Stop listening",
+            Self::Unknown(_) => "",
+        }
+    }
+
     #[must_use]
     pub fn label(&self) -> String {
         match self {
@@ -75,6 +93,30 @@ const GRAMMAR: &[(&[&str], Command)] = &[
     (&["stop", "listening"], Command::StopListening),
     (&["stop"], Command::StopListening),
 ];
+
+/// One help row: every spoken phrase that maps to a command, in grammar
+/// order, grouped so the popup stays in sync with what actually parses.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HelpEntry {
+    pub command: Command,
+    pub phrases: Vec<String>,
+}
+
+#[must_use]
+pub fn help_entries() -> Vec<HelpEntry> {
+    let mut out: Vec<HelpEntry> = Vec::new();
+    for (phrase, cmd) in GRAMMAR {
+        let text = phrase.join(" ");
+        match out.iter_mut().find(|e| e.command == *cmd) {
+            Some(e) => e.phrases.push(text),
+            None => out.push(HelpEntry {
+                command: cmd.clone(),
+                phrases: vec![text],
+            }),
+        }
+    }
+    out
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Extraction {
@@ -419,6 +461,16 @@ mod tests {
         assert!(!close_enough("zevro", "zevrow"), "insertion must not match");
         assert!(!close_enough("copy", "cop"));
         assert!(!close_enough("new", "now"), "short words must be exact");
+    }
+
+    #[test]
+    fn help_entries_cover_every_grammar_phrase_once() {
+        let entries = help_entries();
+        let total: usize = entries.iter().map(|e| e.phrases.len()).sum();
+        assert_eq!(total, GRAMMAR.len());
+        assert!(entries.iter().all(|e| !e.command.description().is_empty()));
+        assert_eq!(entries[0].command, Command::DeleteSentence);
+        assert!(entries[0].phrases.contains(&"scratch that".to_owned()));
     }
 
     #[test]
