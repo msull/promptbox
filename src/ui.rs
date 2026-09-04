@@ -309,6 +309,7 @@ fn editor(app: &mut PromptBoxApp, ui: &mut Ui) {
     let label = ui.label(RichText::new("Prompt").small().weak());
     let rendered = app.core().doc().rendered();
     let provisional = app.core().doc().provisional_range();
+    let pending_command = app.core().pending_command_range();
     let mut text = rendered.clone();
 
     // The document owns the cursor. When it moved for a non-typing reason
@@ -331,6 +332,7 @@ fn editor(app: &mut PromptBoxApp, ui: &mut Ui) {
 
     let normal = ui.visuals().text_color();
     let dim = ui.visuals().weak_text_color();
+    let accent = egui::Color32::from_rgb(0xe0, 0xa0, 0x20);
     let font = TextStyle::Body.resolve(ui.style());
     let mut layouter = |ui: &Ui, buf: &dyn egui::TextBuffer, wrap_width: f32| {
         let s = buf.as_str();
@@ -340,12 +342,24 @@ fn editor(app: &mut PromptBoxApp, ui: &mut Ui) {
             color,
             ..Default::default()
         };
+        let valid = |r: &Range<usize>| {
+            r.start <= r.end
+                && r.end <= s.len()
+                && s.is_char_boundary(r.start)
+                && s.is_char_boundary(r.end)
+        };
         match &provisional {
-            Some(r)
-                if r.end <= s.len() && s.is_char_boundary(r.start) && s.is_char_boundary(r.end) =>
-            {
+            Some(r) if valid(r) => {
                 job.append(&s[..r.start], 0.0, fmt(normal));
-                job.append(&s[r.start..r.end], 0.0, fmt(dim));
+                match &pending_command {
+                    // Command words being spoken: dimmed span, accented tail.
+                    Some(c) if valid(c) && c.start >= r.start && c.end <= r.end => {
+                        job.append(&s[r.start..c.start], 0.0, fmt(dim));
+                        job.append(&s[c.start..c.end], 0.0, fmt(accent));
+                        job.append(&s[c.end..r.end], 0.0, fmt(dim));
+                    }
+                    _ => job.append(&s[r.start..r.end], 0.0, fmt(dim)),
+                }
                 job.append(&s[r.end..], 0.0, fmt(normal));
             }
             _ => job.append(s, 0.0, fmt(normal)),

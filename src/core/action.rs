@@ -8,6 +8,7 @@
 use std::ops::Range;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use crate::core::commands::{self, Command, DEFAULT_TRIGGER};
 use crate::core::document::{Document, OverlapPolicy};
 use crate::core::project::{Project, placeholder_projects};
 use crate::core::text::{last_paragraph_range, last_sentence_range, paragraph_break_for};
@@ -106,6 +107,8 @@ pub enum Effect {
     WriteClipboard(String),
     SaveHistory(SentPrompt),
     SaveDraft(String),
+    /// A voice command asked to stop the microphone.
+    StopListening,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -139,6 +142,7 @@ pub struct AppCore {
     voice_since: Option<Duration>,
     last_progress: Option<Duration>,
     stall_flagged: bool,
+    trigger: String,
 }
 
 impl Default for AppCore {
@@ -166,6 +170,7 @@ impl AppCore {
             voice_since: None,
             last_progress: None,
             stall_flagged: false,
+            trigger: DEFAULT_TRIGGER.to_owned(),
         }
     }
 
@@ -212,6 +217,21 @@ impl AppCore {
         self.active_session.is_some()
     }
 
+    /// The word that opens the voice-command channel.
+    #[must_use]
+    pub fn trigger(&self) -> &str {
+        &self.trigger
+    }
+
+    /// Rendered-coordinate range of a command being spoken inside the live
+    /// provisional span, for highlighting.
+    #[must_use]
+    pub fn pending_command_range(&self) -> Option<Range<usize>> {
+        let p = self.doc.provisional()?;
+        let offset = commands::pending_command_offset(&p.text, &self.trigger)?;
+        Some(p.anchor + offset..p.anchor + p.text.len())
+    }
+
     /// Latest microphone level in dBFS (-120 when nothing has arrived).
     #[must_use]
     pub fn audio_level_db(&self) -> f32 {
@@ -236,7 +256,7 @@ impl AppCore {
                 self.mark_dirty(now.mono);
             }
             AppAction::CursorMoved(pos) => self.doc.set_cursor(pos),
-            AppAction::SpeechEventReceived(ev) => self.on_speech(&ev, now.mono),
+            AppAction::SpeechEventReceived(ev) => self.on_speech(&ev, now, &mut effects),
             AppAction::SessionStarted(id) => {
                 self.active_session = Some(id);
                 self.doc.set_active_session(id);
@@ -368,7 +388,8 @@ impl AppCore {
 
     // ---- helpers -----------------------------------------------------
 
-    fn on_speech(&mut self, ev: &SpeechEvent, now: Duration) {
+    fn on_speech(&mut self, ev: &SpeechEvent, clock: Clock, effects: &mut Vec<Effect>) {
+        let now = clock.mono;
         match &ev.kind {
             SpeechEventKind::AudioGap { missing } => {
                 let ms = (missing.end - missing.start) / 16;
@@ -384,8 +405,37 @@ impl AppCore {
             }
             _ => {}
         }
+        // Commands live only in finals; a partial keeps its command words
+        // visible (highlighted by the UI) until the Final removes them.
+        let mut commands = Vec::new();
+        let ev = match &ev.kind {
+            SpeechEventKind::Final {
+                utterance,
+                text,
+                confidence,
+            } => {
+                let extracted = commands::extract(text, &self.trigger);
+                commands = extracted.commands;
+                SpeechEvent {
+                    kind: SpeechEventKind::Final {
+                        utterance: *utterance,
+                        text: extracted.dictation,
+                        confidence: *confidence,
+                    },
+                    ..ev.clone()
+                }
+            }
+            _ => ev.clone(),
+        };
+        let ev = &ev;
         match self.doc.apply_event(ev) {
             Ok(_) => {
+                // The document accepted this Final exactly once (duplicates
+                // and stale sessions are rejected above), so commands run
+                // at most once per utterance.
+                for cmd in &commands {
+                    self.run_command(cmd, clock, effects);
+                }
                 if matches!(
                     ev.kind,
                     SpeechEventKind::Partial { .. } | SpeechEventKind::Final { .. }
@@ -404,6 +454,44 @@ impl AppCore {
                 }
             }
             Err(r) => log::debug!("speech event {}/{} ignored: {r:?}", ev.session, ev.sequence),
+        }
+    }
+
+    fn run_command(&mut self, cmd: &Command, clock: Clock, effects: &mut Vec<Effect>) {
+        let action = match cmd {
+            Command::DeleteSentence => AppAction::DeleteSentence,
+            Command::DeleteParagraph => AppAction::DeleteParagraph,
+            Command::Undo => AppAction::Undo,
+            Command::Redo => AppAction::Redo,
+            Command::Newline => AppAction::Newline,
+            Command::NewParagraph => AppAction::NewParagraph,
+            Command::Clear => AppAction::ClearPrompt,
+            Command::Copy => AppAction::CopyPrompt,
+            Command::Send => AppAction::SendPrompt,
+            Command::StopListening => {
+                effects.push(Effect::StopListening);
+                self.show_toast("Voice: stop listening".to_owned(), false, clock.mono);
+                return;
+            }
+            Command::Unknown(heard) => {
+                let msg = if heard.is_empty() {
+                    format!("Heard \"{}\" with no command", self.trigger)
+                } else {
+                    format!("Unknown voice command \"{heard}\"")
+                };
+                self.show_toast(msg, true, clock.mono);
+                return;
+            }
+        };
+        effects.extend(self.dispatch(action, clock));
+        // Commands that already toast (undo with nothing to undo, send)
+        // keep their message; otherwise confirm what was heard.
+        if self
+            .toast
+            .as_ref()
+            .is_none_or(|t| t.expires_at < clock.mono + TOAST_DURATION)
+        {
+            self.show_toast(format!("Voice: {}", cmd.label()), false, clock.mono);
         }
     }
 
@@ -987,6 +1075,144 @@ mod tests {
             Clock::at(4),
         );
         assert_eq!(core.doc().committed(), "Para one.\n\nPara two.");
+    }
+
+    #[test]
+    fn voice_command_runs_once_and_its_words_never_enter_the_prompt() {
+        let mut core = AppCore::new();
+        core.dispatch(AppAction::SessionStarted(1), Clock::at(0));
+        core.dispatch(
+            speech(1, 1, SpeechEventKind::VoiceStarted { utterance: 1 }),
+            Clock::at(1),
+        );
+        core.dispatch(
+            speech(
+                1,
+                2,
+                SpeechEventKind::Final {
+                    utterance: 1,
+                    text: "First sentence.".into(),
+                    confidence: None,
+                },
+            ),
+            Clock::at(2),
+        );
+        core.dispatch(
+            speech(1, 3, SpeechEventKind::VoiceStarted { utterance: 2 }),
+            Clock::at(3),
+        );
+        core.dispatch(
+            speech(
+                1,
+                4,
+                SpeechEventKind::Partial {
+                    utterance: 2,
+                    revision: 1,
+                    text: "Second one. Zevro del".into(),
+                },
+            ),
+            Clock::at(4),
+        );
+        assert_eq!(
+            core.doc().rendered(),
+            "First sentence. Second one. Zevro del"
+        );
+        let r = core.pending_command_range().unwrap();
+        assert_eq!(
+            &core.doc().rendered()[r],
+            "Zevro del",
+            "command words are highlighted"
+        );
+        let final_ev = speech(
+            1,
+            5,
+            SpeechEventKind::Final {
+                utterance: 2,
+                text: "Second one. Zevro delete sentence.".into(),
+                confidence: None,
+            },
+        );
+        core.dispatch(final_ev.clone(), Clock::at(5));
+        assert_eq!(core.doc().committed(), "First sentence.");
+        assert_eq!(toast_text(&core), "Voice: delete sentence");
+        // A duplicate Final (same sequence) is rejected by the document, so
+        // the command does not run a second time.
+        core.dispatch(final_ev, Clock::at(6));
+        assert_eq!(core.doc().committed(), "First sentence.");
+        // Undo restores the deleted sentence, not the command words.
+        core.dispatch(AppAction::Undo, Clock::at(7));
+        assert_eq!(core.doc().committed(), "First sentence. Second one.");
+    }
+
+    #[test]
+    fn voice_send_copies_and_clears_and_stop_is_an_effect() {
+        let mut core = AppCore::new();
+        typed(&mut core, "Ship it.", 0);
+        core.dispatch(AppAction::SessionStarted(1), Clock::at(1));
+        core.dispatch(
+            speech(1, 1, SpeechEventKind::VoiceStarted { utterance: 1 }),
+            Clock::at(2),
+        );
+        let effects = core.dispatch(
+            speech(
+                1,
+                2,
+                SpeechEventKind::Final {
+                    utterance: 1,
+                    text: "Zevro send".into(),
+                    confidence: None,
+                },
+            ),
+            Clock::at(3),
+        );
+        assert_eq!(effects[0], Effect::WriteClipboard("Ship it.".into()));
+        assert!(matches!(effects[1], Effect::SaveHistory(_)));
+        core.dispatch(
+            speech(1, 3, SpeechEventKind::VoiceStarted { utterance: 2 }),
+            Clock::at(4),
+        );
+        let effects = core.dispatch(
+            speech(
+                1,
+                4,
+                SpeechEventKind::Final {
+                    utterance: 2,
+                    text: "zevro stop listening".into(),
+                    confidence: None,
+                },
+            ),
+            Clock::at(5),
+        );
+        assert!(effects.contains(&Effect::StopListening));
+    }
+
+    #[test]
+    fn unknown_voice_command_is_reported_and_rest_is_kept() {
+        let mut core = AppCore::new();
+        core.dispatch(AppAction::SessionStarted(1), Clock::at(0));
+        core.dispatch(
+            speech(1, 1, SpeechEventKind::VoiceStarted { utterance: 1 }),
+            Clock::at(1),
+        );
+        core.dispatch(
+            speech(
+                1,
+                2,
+                SpeechEventKind::Final {
+                    utterance: 1,
+                    text: "Zevro frobnicate the thing.".into(),
+                    confidence: None,
+                },
+            ),
+            Clock::at(2),
+        );
+        assert_eq!(
+            core.doc().committed(),
+            "",
+            "unknown command words are not dictated"
+        );
+        assert!(core.toast().unwrap().is_error);
+        assert!(toast_text(&core).contains("frobnicate the thing"));
     }
 
     #[test]

@@ -273,6 +273,10 @@ impl PromptBoxApp {
                 Effect::SaveDraft(text) => {
                     AppAction::DraftSaveFinished(self.history.save_draft(&text))
                 }
+                Effect::StopListening => {
+                    self.stop_listening();
+                    continue;
+                }
             };
             self.dispatch(result);
         }
@@ -310,7 +314,7 @@ impl PromptBoxApp {
             .name("whisper-load".into())
             .spawn(move || {
                 let cfg = EngineConfig {
-                    hint,
+                    hint: Some(hint),
                     ..EngineConfig::default()
                 };
                 let _ = tx.send(WhisperEngine::load(&path, cfg).map_err(|e| format!("{e:#}")));
@@ -319,9 +323,17 @@ impl PromptBoxApp {
         self.recognizer = Recognizer::Loading(rx);
     }
 
-    fn vocabulary_hint(&self) -> Option<String> {
+    /// Project vocabulary plus the trigger word, so whisper is primed to
+    /// hear the command channel.
+    fn vocabulary_hint(&self) -> String {
         let p = &self.core.projects()[self.core.selected_project()];
-        (!p.vocabulary.is_empty()).then(|| p.vocabulary.join(", "))
+        let mut words: Vec<String> = p.vocabulary.clone();
+        let mut trigger = self.core.trigger().to_owned();
+        if let Some(first) = trigger.get_mut(0..1) {
+            first.make_ascii_uppercase();
+        }
+        words.push(trigger);
+        words.join(", ")
     }
 
     fn open_microphone(&mut self) {

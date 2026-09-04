@@ -5,12 +5,36 @@ with [egui](https://docs.rs/egui) / [eframe](https://docs.rs/eframe). Design:
 `voice-prompt-workbench-design.md`. Milestone 0 spike and its findings:
 `spikes/voice-spike/`.
 
-Current state (Milestone 3, transcript operations): microphone capture through a
+Current state (Milestone 4, voice commands): microphone capture through a
 lock-free ring buffer, whisper.cpp (Metal on macOS) with emulated streaming
 partials, dimmed provisional text in the editor, an input level meter,
 stall and audio-gap warnings, Copy and Send through a clipboard port that
 reports failure, sent-prompt history, autosaved draft, undo/redo, delete
-sentence/paragraph, paragraph breaks, and toasts.
+sentence/paragraph, paragraph breaks, voice commands, and toasts.
+
+## Voice commands
+
+Say the trigger word **Zevro** followed by a command, in the same breath or
+its own: "…move it into the service layer. Zevro delete sentence."
+
+| Say | Does |
+|---|---|
+| Zevro delete sentence / scratch that | Delete last sentence |
+| Zevro delete paragraph | Delete last paragraph |
+| Zevro undo / redo | Undo / redo |
+| Zevro new line / new paragraph | Line break / paragraph break |
+| Zevro clear | Clear (undoable) |
+| Zevro copy | Copy without clearing |
+| Zevro send | Copy and clear |
+| Zevro stop | Stop listening |
+
+Commands are extracted only from finalized utterances, so each runs exactly
+once. While you are still speaking, the command words show in amber inside
+the dimmed provisional text and disappear when the utterance finalizes.
+Words are matched with a one-letter tolerance ("sand" counts as "send");
+anything after the trigger that matches nothing is dropped and reported in
+a toast, never typed into the prompt. The trigger is added to whisper's
+vocabulary hint so it is recognized reliably.
 
 ## First run
 
