@@ -84,8 +84,15 @@ fn top_bar(app: &mut PromptBoxApp, ui: &mut Ui) {
             {
                 app.set_always_on_top(ui.ctx(), pinned);
             }
+            if ui
+                .button("Dock")
+                .on_hover_text("Dock: shrink and move to the next screen corner")
+                .clicked()
+            {
+                app.dock_next_corner(ui.ctx());
+            }
             if compact {
-                listen_controls(app, ui);
+                listen_controls(app, ui, true);
                 return;
             }
             ui.menu_button("Debug", |ui| {
@@ -102,7 +109,7 @@ fn top_bar(app: &mut PromptBoxApp, ui: &mut Ui) {
                     }
                 }
             });
-            listen_controls(app, ui);
+            listen_controls(app, ui, false);
         });
     });
     if !app.model_present() {
@@ -110,7 +117,7 @@ fn top_bar(app: &mut PromptBoxApp, ui: &mut Ui) {
     }
 }
 
-fn listen_controls(app: &mut PromptBoxApp, ui: &mut Ui) {
+fn listen_controls(app: &mut PromptBoxApp, ui: &mut Ui, compact: bool) {
     let loading = matches!(app.recognizer(), Recognizer::Loading(_));
     let finishing = *app.core().status() == SessionStatus::Finishing;
     if app.is_live() {
@@ -122,10 +129,11 @@ fn listen_controls(app: &mut PromptBoxApp, ui: &mut Ui) {
             app.stop_listening();
         }
     } else {
-        let label = if loading {
-            "Loading model…"
-        } else {
-            "Start listening"
+        let label = match (loading, compact) {
+            (true, true) => "Loading…",
+            (true, false) => "Loading model…",
+            (false, true) => "Listen",
+            (false, false) => "Start listening",
         };
         if ui
             .add_enabled(!loading && !app.is_demo_running(), egui::Button::new(label))

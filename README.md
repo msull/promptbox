@@ -63,6 +63,8 @@ every 500 ms after a change), and `models/ggml-base.en.bin`.
 
 Shortcuts: ⌘L start/stop listening, ⌘↩ Send (copy and clear), ⌘⇧C Copy.
 The 📌 button pins the window above others (remembered in `settings.json`).
+**Dock** shrinks the window to 300×330 and moves it to the next screen
+corner on each click (top-right, bottom-right, bottom-left, top-left).
 Below about 460 px wide the top bar hides the project picker and Debug menu
 so the window can sit small in a corner.
 

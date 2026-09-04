@@ -178,6 +178,25 @@ fn pin_toggle_persists_always_on_top() {
 }
 
 #[test]
+fn dock_button_cycles_corners_starting_top_right() {
+    use promptbox::app::Corner;
+    let mut harness = harness();
+    assert_eq!(harness.state().docked_corner(), None);
+    let expected = [
+        Corner::TopRight,
+        Corner::BottomRight,
+        Corner::BottomLeft,
+        Corner::TopLeft,
+        Corner::TopRight,
+    ];
+    for corner in expected {
+        harness.get_by_label("Dock").click();
+        harness.run_steps(2);
+        assert_eq!(harness.state().docked_corner(), Some(corner));
+    }
+}
+
+#[test]
 fn draft_is_restored_on_startup() {
     let store = MemoryStore {
         draft: Some("unsent draft".into()),

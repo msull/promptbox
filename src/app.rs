@@ -19,6 +19,48 @@ use crate::ports::engine::{AudioChunk, EngineConfig, PushError, SpeechEngine};
 use crate::ports::history::{HistoryStore, Settings};
 use crate::ports::speech::SpeechEventKind;
 
+/// Compact "docked" window size in points: the compact top bar, the
+/// bottom bar, roughly 200 px of prompt, and a little room below it.
+pub const DOCK_SIZE: egui::Vec2 = egui::vec2(300.0, 330.0);
+/// Gap between a docked window and the screen edge, in points.
+const DOCK_MARGIN: f32 = 8.0;
+
+/// Screen corners the dock button cycles through, in order.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Corner {
+    TopRight,
+    BottomRight,
+    BottomLeft,
+    TopLeft,
+}
+
+impl Corner {
+    #[must_use]
+    pub fn next(self) -> Self {
+        match self {
+            Self::TopRight => Self::BottomRight,
+            Self::BottomRight => Self::BottomLeft,
+            Self::BottomLeft => Self::TopLeft,
+            Self::TopLeft => Self::TopRight,
+        }
+    }
+
+    /// Top-left outer position for a window of `outer` size on a monitor
+    /// of `monitor` size, inset by `margin`.
+    #[must_use]
+    pub fn position(self, monitor: egui::Vec2, outer: egui::Vec2, margin: f32) -> egui::Pos2 {
+        let x = match self {
+            Self::TopRight | Self::BottomRight => monitor.x - outer.x - margin,
+            Self::BottomLeft | Self::TopLeft => margin,
+        };
+        let y = match self {
+            Self::TopRight | Self::TopLeft => margin,
+            Self::BottomRight | Self::BottomLeft => monitor.y - outer.y - margin,
+        };
+        egui::pos2(x.max(0.0), y.max(0.0))
+    }
+}
+
 /// Audio the app will hold for a slow engine before giving up (30 s).
 const BACKLOG_LIMIT_CHUNKS: usize = 1500;
 
@@ -59,6 +101,8 @@ pub struct PromptBoxApp {
     settings: Settings,
     /// The window level must be applied once a viewport exists.
     window_level_applied: bool,
+    /// Corner the window was last docked to; `None` until first use.
+    docked_corner: Option<Corner>,
 }
 
 impl PromptBoxApp {
@@ -101,6 +145,7 @@ impl PromptBoxApp {
             backlog: std::collections::VecDeque::new(),
             settings,
             window_level_applied: false,
+            docked_corner: None,
         };
         app.dispatch(AppAction::RecentLoaded(recent));
         app.dispatch(AppAction::DraftLoaded(draft));
@@ -155,6 +200,36 @@ impl PromptBoxApp {
         if let Err(e) = self.history.save_settings(&self.settings) {
             log::warn!("could not save settings: {e}");
         }
+    }
+
+    #[must_use]
+    pub fn docked_corner(&self) -> Option<Corner> {
+        self.docked_corner
+    }
+
+    /// Shrinks the window to [`DOCK_SIZE`] and moves it to the next screen
+    /// corner (top-right first). Positions come from the current monitor's
+    /// size; on a secondary monitor egui does not expose the origin, so the
+    /// window lands relative to the primary one.
+    pub fn dock_next_corner(&mut self, ctx: &egui::Context) {
+        let corner = self.docked_corner.map_or(Corner::TopRight, Corner::next);
+        self.docked_corner = Some(corner);
+        let (monitor, inner, outer) = ctx.input(|i| {
+            let v = i.viewport();
+            (v.monitor_size, v.inner_rect, v.outer_rect)
+        });
+        ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(DOCK_SIZE));
+        let Some(monitor) = monitor else {
+            log::warn!("monitor size unknown; resized without moving");
+            return;
+        };
+        // Decorations (title bar) are the difference between outer and inner.
+        let chrome = match (inner, outer) {
+            (Some(i), Some(o)) => o.size() - i.size(),
+            _ => egui::vec2(0.0, 28.0),
+        };
+        let pos = corner.position(monitor, DOCK_SIZE + chrome, DOCK_MARGIN);
+        ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(pos));
     }
 
     fn apply_window_level(&mut self, ctx: &egui::Context) {
@@ -479,5 +554,59 @@ impl eframe::App for PromptBoxApp {
             ui.ctx().request_repaint_after(delay);
         }
         crate::ui::draw(self, ui);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn corners_cycle_clockwise_from_top_right() {
+        let mut c = Corner::TopRight;
+        let seen: Vec<Corner> = (0..5)
+            .map(|_| {
+                let cur = c;
+                c = c.next();
+                cur
+            })
+            .collect();
+        assert_eq!(
+            seen,
+            [
+                Corner::TopRight,
+                Corner::BottomRight,
+                Corner::BottomLeft,
+                Corner::TopLeft,
+                Corner::TopRight
+            ]
+        );
+    }
+
+    #[test]
+    fn corner_positions_inset_by_margin_and_never_negative() {
+        let monitor = egui::vec2(1000.0, 800.0);
+        let outer = egui::vec2(300.0, 350.0);
+        assert_eq!(
+            Corner::TopRight.position(monitor, outer, 8.0),
+            egui::pos2(692.0, 8.0)
+        );
+        assert_eq!(
+            Corner::BottomRight.position(monitor, outer, 8.0),
+            egui::pos2(692.0, 442.0)
+        );
+        assert_eq!(
+            Corner::BottomLeft.position(monitor, outer, 8.0),
+            egui::pos2(8.0, 442.0)
+        );
+        assert_eq!(
+            Corner::TopLeft.position(monitor, outer, 8.0),
+            egui::pos2(8.0, 8.0)
+        );
+        let tiny = egui::vec2(100.0, 100.0);
+        assert_eq!(
+            Corner::BottomRight.position(tiny, outer, 8.0),
+            egui::pos2(0.0, 0.0)
+        );
     }
 }
