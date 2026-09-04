@@ -36,3 +36,34 @@ fn cleans_up_a_dictated_sentence() {
     assert!(!lower.starts_with("here"), "no preamble: {}", reply.text);
     assert!(reply.prompt_tokens > 0 && reply.completion_tokens > 0);
 }
+
+#[test]
+#[ignore = "calls the OpenAI API and spends tokens"]
+fn chooses_the_quote_tool() {
+    use promptbox::ports::ai::ToolChoiceRequest;
+    let key = std::env::var("OPENAI_API_KEY")
+        .ok()
+        .or_else(|| read_dotenv_key(Path::new(".env"), "OPENAI_API_KEY"))
+        .expect("OPENAI_API_KEY");
+    let rewriter = OpenAiRewriter::new(key, DEFAULT_MODEL.into());
+    let (tools, problems) = promptbox::adapters::tools::load_manifests(Path::new("examples/tools"));
+    assert!(problems.is_empty(), "{problems:?}");
+    let choice = rewriter
+        .choose_tool(&ToolChoiceRequest {
+            id: 1,
+            request: "save that quote".into(),
+            prompt: "Be kind, for everyone you meet is fighting a hard battle. Ian Maclaren".into(),
+            context: String::new(),
+            tools,
+        })
+        .unwrap();
+    println!("{choice:?}");
+    let call = choice.call.expect("a tool call");
+    assert_eq!(call.name, "save_quote");
+    assert!(
+        call.arguments["quote"]
+            .as_str()
+            .unwrap()
+            .contains("hard battle")
+    );
+}

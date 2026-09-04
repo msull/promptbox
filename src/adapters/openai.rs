@@ -28,6 +28,7 @@ impl OpenAiRewriter {
 
 #[derive(Deserialize)]
 struct ChatResponse {
+    #[serde(default)]
     choices: Vec<Choice>,
     #[serde(default)]
     usage: Option<Usage>,
@@ -148,6 +149,9 @@ impl Rewriter for OpenAiRewriter {
             ],
             "tools": tools,
             "tool_choice": "auto",
+            // gpt-5.6-luna refuses function tools on chat completions
+            // unless reasoning is off; routing needs no reasoning anyway.
+            "reasoning_effort": "none",
         });
         let (choice, usage) = self.complete(&body)?;
         let call = match choice.message.tool_calls.into_iter().next() {
