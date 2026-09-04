@@ -3,6 +3,7 @@
 
 pub mod audio;
 pub mod clipboard;
+pub mod dock;
 pub mod fake_speech;
 pub mod model;
 pub mod openai;

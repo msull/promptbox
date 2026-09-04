@@ -16,7 +16,7 @@ use crate::adapters::speech::WhisperEngine;
 use crate::adapters::typist::SystemTypist;
 use crate::core::action::RECENT_LIMIT;
 use crate::core::action::TypingPolicy;
-use crate::core::{AppAction, AppCore, Clock, Effect, Project};
+use crate::core::{AppAction, AppCore, Clock, Effect, Project, SessionStatus};
 use crate::ports::ai::Rewriter;
 use crate::ports::clipboard::Clipboard;
 use crate::ports::engine::{AudioChunk, EngineConfig, PushError, SpeechEngine};
@@ -110,6 +110,8 @@ pub struct PromptBoxApp {
     window_level_applied: bool,
     /// Corner the window was last docked to; `None` until first use.
     docked_corner: Option<Corner>,
+    /// Whether the Dock icon currently shows the recording badge.
+    dock_badge_shown: bool,
     /// Whether the voice-command help popup is open.
     pub show_commands: bool,
     /// Whether the settings window is open.
@@ -223,6 +225,7 @@ impl PromptBoxApp {
             settings,
             window_level_applied: false,
             docked_corner: None,
+            dock_badge_shown: false,
             show_commands: false,
             show_settings: false,
             project_editor: None,
@@ -941,6 +944,21 @@ impl PromptBoxApp {
     }
 }
 
+impl PromptBoxApp {
+    /// Keeps the Dock badge in step with whether audio is being captured.
+    /// Only touches `AppKit` when the state actually changes.
+    fn sync_dock_badge(&mut self) {
+        let recording = matches!(
+            self.core.status(),
+            SessionStatus::Listening | SessionStatus::Finishing
+        );
+        if recording != self.dock_badge_shown {
+            crate::adapters::dock::set_recording_badge(recording);
+            self.dock_badge_shown = recording;
+        }
+    }
+}
+
 impl eframe::App for PromptBoxApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         self.apply_window_level(ui.ctx());
@@ -949,6 +967,7 @@ impl eframe::App for PromptBoxApp {
         if let Some(delay) = self.pump() {
             ui.ctx().request_repaint_after(delay);
         }
+        self.sync_dock_badge();
         crate::ui::draw(self, ui);
     }
 }
