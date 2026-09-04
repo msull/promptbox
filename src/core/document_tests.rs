@@ -981,6 +981,57 @@ fn redo_reapplies_until_a_new_edit_supersedes_it() {
 }
 
 #[test]
+fn whole_document_replacement_invalidates_anchors_of_a_live_utterance() {
+    // An utterance starts (anchor captured near the end of a long text),
+    // then an AI rewrite replaces the document with something shorter.
+    let mut doc = Document::new();
+    doc.set_active_session(S1);
+    let long = "x".repeat(246);
+    doc.apply_manual_edit(0..0, &long, OverlapPolicy::CommitProvisional)
+        .unwrap();
+    doc.apply_event(&ev(S1, 1, SpeechEventKind::VoiceStarted { utterance: 1 }))
+        .unwrap();
+    doc.replace_all_from("short", EditSource::Ai);
+    doc.apply_event(&ev(
+        S1,
+        2,
+        SpeechEventKind::Partial {
+            utterance: 1,
+            revision: 1,
+            text: "more".into(),
+        },
+    ))
+    .unwrap();
+    assert_eq!(doc.rendered(), "short more");
+    doc.apply_event(&ev(
+        S1,
+        3,
+        SpeechEventKind::Final {
+            utterance: 1,
+            text: "more.".into(),
+            confidence: None,
+        },
+    ))
+    .unwrap();
+    assert_eq!(doc.committed(), "short more.");
+    // Same for a persisted draft loading over a live anchor.
+    doc.apply_event(&ev(S1, 4, SpeechEventKind::VoiceStarted { utterance: 2 }))
+        .unwrap();
+    doc.load("hi");
+    doc.apply_event(&ev(
+        S1,
+        5,
+        SpeechEventKind::Final {
+            utterance: 2,
+            text: "there".into(),
+            confidence: None,
+        },
+    ))
+    .unwrap();
+    assert_eq!(doc.committed(), "hi there");
+}
+
+#[test]
 fn replace_all_is_one_undoable_entry() {
     let mut doc = Document::new();
     doc.apply_manual_edit(0..0, "keep me", OverlapPolicy::CommitProvisional)

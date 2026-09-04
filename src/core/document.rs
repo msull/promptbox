@@ -168,6 +168,7 @@ impl Document {
     /// Loads persisted text as the starting point, without a history entry.
     pub fn load(&mut self, text: &str) {
         self.provisional = None;
+        self.anchors.clear();
         self.history.clear();
         self.redo.clear();
         text.clone_into(&mut self.committed);
@@ -182,6 +183,9 @@ impl Document {
     /// Replaces the whole document as one undoable entry with `source`.
     pub fn replace_all_from(&mut self, text: &str, source: EditSource) {
         self.provisional = None;
+        // Anchors captured in the old text are meaningless now; an utterance
+        // in progress continues at the end of the new text instead.
+        self.anchors.clear();
         let old = std::mem::take(&mut self.committed);
         self.redo.clear();
         self.history.push(RangeReplace {
@@ -420,10 +424,17 @@ impl Document {
     // ---- helpers -------------------------------------------------------
 
     fn anchor_for(&self, key: (SessionId, UtteranceId)) -> usize {
-        self.anchors
+        let anchor = self
+            .anchors
             .get(&key)
             .copied()
-            .unwrap_or_else(|| self.committed_pos(self.cursor))
+            .unwrap_or_else(|| self.committed_pos(self.cursor));
+        // Defensive: never let a stale offset index past the committed text.
+        let mut anchor = anchor.min(self.committed.len());
+        while !self.committed.is_char_boundary(anchor) {
+            anchor -= 1;
+        }
+        anchor
     }
 
     /// Maps a rendered position into committed coordinates.
