@@ -7,12 +7,13 @@ use egui::text::{LayoutJob, TextFormat};
 use egui::{Key, KeyboardShortcut, Modifiers, RichText, TextEdit, TextStyle, Ui};
 use unicode_segmentation::UnicodeSegmentation;
 
-use crate::app::PromptBoxApp;
+use crate::app::{PromptBoxApp, Recognizer};
 use crate::core::{AppAction, SessionStatus};
 
 const SEND: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key::Enter);
 const COPY_ALL: KeyboardShortcut =
     KeyboardShortcut::new(Modifiers::COMMAND.plus(Modifiers::SHIFT), Key::C);
+const TOGGLE_LISTEN: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key::L);
 
 pub fn draw(app: &mut PromptBoxApp, ui: &mut Ui) {
     handle_shortcuts(app, ui);
@@ -22,12 +23,25 @@ pub fn draw(app: &mut PromptBoxApp, ui: &mut Ui) {
 }
 
 fn handle_shortcuts(app: &mut PromptBoxApp, ui: &mut Ui) {
-    let (send, copy) = ui.input_mut(|i| (i.consume_shortcut(&SEND), i.consume_shortcut(&COPY_ALL)));
+    let (send, copy, toggle) = ui.input_mut(|i| {
+        (
+            i.consume_shortcut(&SEND),
+            i.consume_shortcut(&COPY_ALL),
+            i.consume_shortcut(&TOGGLE_LISTEN),
+        )
+    });
     if send {
         app.dispatch(AppAction::SendPrompt);
     }
     if copy {
         app.dispatch(AppAction::CopyPrompt);
+    }
+    if toggle {
+        if app.is_live() {
+            app.stop_listening();
+        } else {
+            app.start_listening();
+        }
     }
 }
 
@@ -55,20 +69,103 @@ fn top_bar(app: &mut PromptBoxApp, ui: &mut Ui) {
             app.dispatch(AppAction::SelectProject(choice));
         }
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            if app.is_demo_running() {
-                if ui.button("Stop demo").clicked() {
-                    app.stop_demo();
+            ui.menu_button("Debug", |ui| {
+                if app.is_demo_running() {
+                    if ui.button("Stop demo").clicked() {
+                        app.stop_demo();
+                    }
+                } else {
+                    if ui.button("Demo dictation").clicked() {
+                        app.start_demo(false);
+                    }
+                    if ui.button("Demo with gap").clicked() {
+                        app.start_demo(true);
+                    }
                 }
-            } else {
-                if ui.button("Demo dictation").clicked() {
-                    app.start_demo(false);
-                }
-                if ui.button("Demo with gap").clicked() {
-                    app.start_demo(true);
-                }
-            }
+            });
+            listen_controls(app, ui);
         });
     });
+    if !app.model_present() {
+        model_download_row(app, ui);
+    }
+}
+
+fn listen_controls(app: &mut PromptBoxApp, ui: &mut Ui) {
+    let loading = matches!(app.recognizer(), Recognizer::Loading(_));
+    let finishing = *app.core().status() == SessionStatus::Finishing;
+    if app.is_live() {
+        if ui
+            .add_enabled(!finishing, egui::Button::new("Stop"))
+            .on_hover_text("Stop listening (⌘L)")
+            .clicked()
+        {
+            app.stop_listening();
+        }
+    } else {
+        let label = if loading {
+            "Loading model…"
+        } else {
+            "Start listening"
+        };
+        if ui
+            .add_enabled(!loading && !app.is_demo_running(), egui::Button::new(label))
+            .on_hover_text("Start listening (⌘L)")
+            .clicked()
+        {
+            app.start_listening();
+        }
+    }
+}
+
+fn model_download_row(app: &mut PromptBoxApp, ui: &mut Ui) {
+    ui.horizontal(|ui| {
+        if let Some(d) = app.download() {
+            let (done, total) = d.progress();
+            let mb = |b: u64| b as f32 / 1_048_576.0;
+            let frac = if total > 0 {
+                done as f32 / total as f32
+            } else {
+                0.0
+            };
+            ui.add(
+                egui::ProgressBar::new(frac)
+                    .desired_width(240.0)
+                    .text(format!(
+                        "Downloading base.en… {:.0} / {:.0} MB",
+                        mb(done),
+                        mb(total)
+                    )),
+            );
+        } else {
+            ui.label(RichText::new("No speech model yet.").weak());
+            if ui.button("Download base.en (148 MB)").clicked() {
+                app.start_download();
+            }
+            ui.label(
+                RichText::new(format!("→ {}", app.model_path().display()))
+                    .weak()
+                    .small(),
+            );
+        }
+    });
+}
+
+/// Five-bar level meter from the latest microphone level.
+fn level_meter(ui: &mut Ui, level_db: f32, active: bool) {
+    let bars = 5;
+    let lit = if active {
+        (((level_db + 60.0) / 50.0).clamp(0.0, 1.0) * bars as f32).round() as usize
+    } else {
+        0
+    };
+    let s: String = (0..bars).map(|i| if i < lit { '▮' } else { '▯' }).collect();
+    let color = if active {
+        egui::Color32::from_rgb(0x2e, 0xb8, 0x5c)
+    } else {
+        ui.visuals().weak_text_color()
+    };
+    ui.label(RichText::new(s).color(color).monospace());
 }
 
 fn status_indicator(app: &mut PromptBoxApp, ui: &mut Ui) {
@@ -82,6 +179,12 @@ fn status_indicator(app: &mut PromptBoxApp, ui: &mut Ui) {
         SessionStatus::Listening => (
             "●",
             "Listening".to_owned(),
+            egui::Color32::from_rgb(0x2e, 0xb8, 0x5c),
+            false,
+        ),
+        SessionStatus::Finishing => (
+            "◐",
+            "Finishing…".to_owned(),
             egui::Color32::from_rgb(0x2e, 0xb8, 0x5c),
             false,
         ),
@@ -99,6 +202,7 @@ fn status_indicator(app: &mut PromptBoxApp, ui: &mut Ui) {
         ),
     };
     ui.label(RichText::new(format!("{icon} {text}")).color(color));
+    level_meter(ui, app.core().audio_level_db(), app.is_live());
     if ack && ui.small_button("Dismiss").clicked() {
         app.dispatch(AppAction::AcknowledgeStatus);
     }

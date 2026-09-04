@@ -15,15 +15,24 @@ name = "promptbox"
 path = "src/main.rs"
 
 [dependencies]
+anyhow = "1"
 arboard = "3.6"
+cpal = "0.18"
 directories = "6"
 eframe = "0.36"
 egui = "0.36"
 env_logger = "0.11"
+hound = "3.5"
 log = "0.4"
+ringbuf = "0.5"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 unicode-segmentation = "1"
+ureq = "3"
+whisper-rs = { version = "0.16", features = ["log_backend"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+whisper-rs = { version = "0.16", features = ["log_backend", "metal"] }
 
 [dev-dependencies]
 egui_kittest = { version = "0.36", features = ["eframe"] }
@@ -38,6 +47,11 @@ pedantic = { level = "warn", priority = -1 }
 missing_errors_doc = "allow"
 missing_panics_doc = "allow"
 module_name_repetitions = "allow"
+# Signal-processing code converts between sample counts and floats constantly.
+cast_precision_loss = "allow"
+cast_possible_truncation = "allow"
+cast_sign_loss = "allow"
+cast_possible_wrap = "allow"
 
 # egui is slow in unoptimised builds; optimise dependencies even in dev.
 [profile.dev.package."*"]

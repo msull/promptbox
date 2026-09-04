@@ -15,6 +15,11 @@ use crate::ports::speech::{SessionId, SpeechEvent, SpeechEventKind};
 
 const TOAST_DURATION: Duration = Duration::from_millis(2500);
 const DRAFT_DEBOUNCE: Duration = Duration::from_millis(500);
+/// Input level above which we consider the user to be speaking.
+pub const VOICE_DB: f32 = -40.0;
+/// Continuous voice without transcript progress before we warn.
+const STALL_AFTER: Duration = Duration::from_secs(4);
+pub const STALL_MESSAGE: &str = "Transcription delayed";
 pub const RECENT_LIMIT: usize = 50;
 
 /// Monotonic time since app start plus wall time, supplied by the caller.
@@ -38,6 +43,8 @@ impl Clock {
 pub enum SessionStatus {
     Idle,
     Listening,
+    /// Stop requested; waiting for the recognizer to finish the last words.
+    Finishing,
     /// Something was lost or delayed; sticky until acknowledged.
     Degraded(String),
     Error(String),
@@ -60,7 +67,13 @@ pub enum AppAction {
     CursorMoved(usize),
     SpeechEventReceived(SpeechEvent),
     SessionStarted(SessionId),
+    /// Stop requested; late events for the session are still accepted.
+    SessionStopping,
     SessionStopped,
+    /// Latest microphone level in dBFS, independent of recognition.
+    AudioLevel(f32),
+    /// The recognizer could not start (missing model, no microphone, ...).
+    EngineUnavailable(String),
     AcknowledgeStatus,
     CopyPrompt,
     SendPrompt,
@@ -112,6 +125,10 @@ pub struct AppCore {
     draft_dirty_since: Option<Duration>,
     last_saved_draft: Option<String>,
     next_send_id: u64,
+    audio_level_db: f32,
+    voice_since: Option<Duration>,
+    last_progress: Option<Duration>,
+    stall_flagged: bool,
 }
 
 impl Default for AppCore {
@@ -135,6 +152,10 @@ impl AppCore {
             draft_dirty_since: None,
             last_saved_draft: None,
             next_send_id: 0,
+            audio_level_db: -120.0,
+            voice_since: None,
+            last_progress: None,
+            stall_flagged: false,
         }
     }
 
@@ -181,8 +202,15 @@ impl AppCore {
         self.active_session.is_some()
     }
 
+    /// Latest microphone level in dBFS (-120 when nothing has arrived).
+    #[must_use]
+    pub fn audio_level_db(&self) -> f32 {
+        self.audio_level_db
+    }
+
     // ---- dispatch ----------------------------------------------------
 
+    #[allow(clippy::too_many_lines)]
     pub fn dispatch(&mut self, action: AppAction, now: Clock) -> Vec<Effect> {
         let mut effects = Vec::new();
         self.expire_toast(now.mono);
@@ -202,6 +230,9 @@ impl AppCore {
             AppAction::SessionStarted(id) => {
                 self.active_session = Some(id);
                 self.doc.set_active_session(id);
+                self.voice_since = None;
+                self.last_progress = Some(now.mono);
+                self.stall_flagged = false;
                 if !matches!(
                     self.status,
                     SessionStatus::Degraded(_) | SessionStatus::Error(_)
@@ -209,13 +240,36 @@ impl AppCore {
                     self.status = SessionStatus::Listening;
                 }
             }
+            AppAction::SessionStopping => {
+                if self.status == SessionStatus::Listening {
+                    self.status = SessionStatus::Finishing;
+                }
+                self.voice_since = None;
+            }
             AppAction::SessionStopped => {
                 self.active_session = None;
                 self.doc.commit_provisional();
                 self.mark_dirty(now.mono);
-                if self.status == SessionStatus::Listening {
+                self.voice_since = None;
+                if matches!(
+                    self.status,
+                    SessionStatus::Listening | SessionStatus::Finishing
+                ) {
                     self.status = SessionStatus::Idle;
                 }
+            }
+            AppAction::AudioLevel(db) => {
+                self.audio_level_db = db;
+                if db > VOICE_DB {
+                    self.voice_since.get_or_insert(now.mono);
+                } else {
+                    self.voice_since = None;
+                }
+                self.check_stall(now.mono);
+            }
+            AppAction::EngineUnavailable(why) => {
+                self.active_session = None;
+                self.status = SessionStatus::Error(why);
             }
             AppAction::AcknowledgeStatus => {
                 self.status = if self.active_session.is_some() {
@@ -276,9 +330,8 @@ impl AppCore {
                     self.selected_project = i;
                 }
             }
-            AppAction::DraftSaveFinished(Ok(()))
-            | AppAction::DraftLoaded(Ok(None))
-            | AppAction::Tick => {}
+            AppAction::DraftSaveFinished(Ok(())) | AppAction::DraftLoaded(Ok(None)) => {}
+            AppAction::Tick => self.check_stall(now.mono),
         }
         self.maybe_autosave(now.mono, &mut effects);
         effects
@@ -304,11 +357,39 @@ impl AppCore {
         }
         match self.doc.apply_event(ev) {
             Ok(_) => {
+                if matches!(
+                    ev.kind,
+                    SpeechEventKind::Partial { .. } | SpeechEventKind::Final { .. }
+                ) {
+                    self.last_progress = Some(now);
+                    if self.stall_flagged {
+                        // Recovered: the recognizer is advancing again.
+                        self.stall_flagged = false;
+                        if self.status == SessionStatus::Degraded(STALL_MESSAGE.to_owned()) {
+                            self.status = SessionStatus::Listening;
+                        }
+                    }
+                }
                 if matches!(ev.kind, SpeechEventKind::Final { .. }) {
                     self.mark_dirty(now);
                 }
             }
             Err(r) => log::debug!("speech event {}/{} ignored: {r:?}", ev.session, ev.sequence),
+        }
+    }
+
+    /// Voice has been arriving continuously but no partial or final has
+    /// landed for `STALL_AFTER`: warn, without blocking anything.
+    fn check_stall(&mut self, now: Duration) {
+        if self.status != SessionStatus::Listening || self.stall_flagged {
+            return;
+        }
+        let (Some(voice), Some(progress)) = (self.voice_since, self.last_progress) else {
+            return;
+        };
+        if now.saturating_sub(voice.max(progress)) >= STALL_AFTER {
+            self.stall_flagged = true;
+            self.status = SessionStatus::Degraded(STALL_MESSAGE.to_owned());
         }
     }
 
@@ -666,6 +747,90 @@ mod tests {
         );
         core.dispatch(AppAction::AcknowledgeStatus, Clock::at(3));
         assert_eq!(*core.status(), SessionStatus::Idle);
+    }
+
+    #[test]
+    fn stall_is_flagged_after_continuous_voice_without_progress_and_recovers() {
+        let mut core = AppCore::new();
+        core.dispatch(AppAction::SessionStarted(1), Clock::at(0));
+        for t in (0..4_000).step_by(500) {
+            core.dispatch(AppAction::AudioLevel(-20.0), Clock::at(t));
+            assert_eq!(*core.status(), SessionStatus::Listening, "at {t}");
+        }
+        core.dispatch(AppAction::AudioLevel(-20.0), Clock::at(4_000));
+        assert_eq!(
+            *core.status(),
+            SessionStatus::Degraded(STALL_MESSAGE.into())
+        );
+        // Progress clears the warning automatically.
+        core.dispatch(
+            speech(1, 1, SpeechEventKind::VoiceStarted { utterance: 1 }),
+            Clock::at(4_100),
+        );
+        core.dispatch(
+            speech(
+                1,
+                2,
+                SpeechEventKind::Partial {
+                    utterance: 1,
+                    revision: 1,
+                    text: "hi".into(),
+                },
+            ),
+            Clock::at(4_200),
+        );
+        assert_eq!(*core.status(), SessionStatus::Listening);
+    }
+
+    #[test]
+    fn silence_resets_the_stall_timer() {
+        let mut core = AppCore::new();
+        core.dispatch(AppAction::SessionStarted(1), Clock::at(0));
+        core.dispatch(AppAction::AudioLevel(-20.0), Clock::at(0));
+        core.dispatch(AppAction::AudioLevel(-90.0), Clock::at(3_000));
+        core.dispatch(AppAction::AudioLevel(-20.0), Clock::at(3_100));
+        core.dispatch(AppAction::Tick, Clock::at(6_000));
+        assert_eq!(*core.status(), SessionStatus::Listening);
+        core.dispatch(AppAction::Tick, Clock::at(7_100));
+        assert!(matches!(core.status(), SessionStatus::Degraded(_)));
+    }
+
+    #[test]
+    fn stopping_keeps_accepting_late_events_until_stopped() {
+        let mut core = AppCore::new();
+        core.dispatch(AppAction::SessionStarted(1), Clock::at(0));
+        core.dispatch(AppAction::SessionStopping, Clock::at(1));
+        assert_eq!(*core.status(), SessionStatus::Finishing);
+        core.dispatch(
+            speech(1, 1, SpeechEventKind::VoiceStarted { utterance: 1 }),
+            Clock::at(2),
+        );
+        core.dispatch(
+            speech(
+                1,
+                2,
+                SpeechEventKind::Final {
+                    utterance: 1,
+                    text: "late words".into(),
+                    confidence: None,
+                },
+            ),
+            Clock::at(3),
+        );
+        assert_eq!(core.doc().committed(), "late words");
+        core.dispatch(AppAction::SessionStopped, Clock::at(4));
+        assert_eq!(*core.status(), SessionStatus::Idle);
+    }
+
+    #[test]
+    fn engine_unavailable_is_an_error_status() {
+        let mut core = AppCore::new();
+        core.dispatch(
+            AppAction::EngineUnavailable("no model".into()),
+            Clock::at(0),
+        );
+        assert_eq!(*core.status(), SessionStatus::Error("no model".into()));
+        assert!(!core.is_listening());
     }
 
     #[test]

@@ -85,6 +85,8 @@ fn copy_keeps_text() {
 #[test]
 fn demo_dictation_shows_provisional_then_committed_text() {
     let mut harness = harness();
+    harness.get_by_label("Debug").click();
+    harness.run_steps(2);
     harness.get_by_label("Demo dictation").click();
     harness.run_steps(2);
     harness.get_by_label("● Listening");
@@ -111,6 +113,8 @@ fn demo_dictation_shows_provisional_then_committed_text() {
 #[test]
 fn demo_with_gap_shows_sticky_degraded_state_until_dismissed() {
     let mut harness = harness();
+    harness.get_by_label("Debug").click();
+    harness.run_steps(2);
     harness.get_by_label("Demo with gap").click();
     harness.run_steps(2);
     harness.state_mut().advance_time(Duration::from_secs(120));
