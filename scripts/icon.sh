@@ -16,5 +16,7 @@ for s in 16 32 128 256 512; do
   sips -z "$d" "$d" "$SRC" --out "$SET/icon_${s}x${s}@2x.png" >/dev/null
 done
 iconutil -c icns "$SET" -o assets/PromptBox.icns
+# Raw pixels embedded in the binary for the Dock icon of a running process.
+swift scripts/render-icon.swift assets/PromptBox.svg assets/icon-256.rgba 256
 rm -rf "$WORK"
-echo "Wrote assets/PromptBox.icns"
+echo "Wrote assets/PromptBox.icns and assets/icon-256.rgba"

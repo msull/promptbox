@@ -1,5 +1,7 @@
-// Renders an SVG to a PNG with a transparent background using AppKit.
-// Usage: swift scripts/render-icon.swift in.svg out.png size
+// Renders an SVG with a transparent background using AppKit, to a PNG or,
+// when the output name ends in .rgba, to raw 8-bit RGBA pixels (row-major,
+// top-left first) for embedding in the binary.
+// Usage: swift scripts/render-icon.swift in.svg out.{png|rgba} size
 import AppKit
 
 let args = CommandLine.arguments
@@ -24,5 +26,15 @@ NSRect(x: 0, y: 0, width: size, height: size).fill()
 image.draw(in: NSRect(x: 0, y: 0, width: size, height: size),
            from: .zero, operation: .sourceOver, fraction: 1.0)
 NSGraphicsContext.restoreGraphicsState()
-guard let png = rep.representation(using: .png, properties: [:]) else { exit(1) }
-try! png.write(to: URL(fileURLWithPath: args[2]))
+if args[2].hasSuffix(".rgba") {
+    // Non-premultiplied, 4 bytes per pixel; bytesPerRow may be padded.
+    guard let data = rep.bitmapData else { exit(1) }
+    var out = Data(capacity: size * size * 4)
+    for y in 0..<size {
+        out.append(data.advanced(by: y * rep.bytesPerRow), count: size * 4)
+    }
+    try! out.write(to: URL(fileURLWithPath: args[2]))
+} else {
+    guard let png = rep.representation(using: .png, properties: [:]) else { exit(1) }
+    try! png.write(to: URL(fileURLWithPath: args[2]))
+}

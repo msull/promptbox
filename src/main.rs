@@ -7,10 +7,18 @@ fn main() -> eframe::Result {
         .init();
     whisper_rs::install_logging_hooks();
 
+    // The running process sets its own Dock icon; without this macOS shows
+    // a generic one while the app is open. Raw RGBA from scripts/icon.sh.
+    let icon = egui::IconData {
+        rgba: include_bytes!("../assets/icon-256.rgba").to_vec(),
+        width: 256,
+        height: 256,
+    };
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([760.0, 520.0])
-            .with_min_inner_size([280.0, 200.0]),
+            .with_min_inner_size([280.0, 200.0])
+            .with_icon(icon),
         ..Default::default()
     };
 
