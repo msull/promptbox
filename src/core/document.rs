@@ -1,7 +1,6 @@
 //! The transcript document: authoritative committed text plus at most one
 //! provisional span, with a single edit history shared by voice and manual
-//! edits. All offsets are UTF-8 byte offsets. Ported from the Milestone 0
-//! spike, where the invariants below were established.
+//! edits. All offsets are UTF-8 byte offsets.
 //!
 //! Invariants exercised by the tests in `tests.rs`:
 //! 1. `committed` is authoritative user content; `rendered()` is a projection.
@@ -369,7 +368,6 @@ impl Document {
         let committed_range = match self.provisional_range() {
             None => range.clone(),
             Some(pr) if range.end <= pr.start => {
-                // Entirely before the span: anchor shifts by the size delta.
                 if let Some(p) = &mut self.provisional {
                     p.anchor = p.anchor - (range.end - range.start) + new.len();
                 }

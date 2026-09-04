@@ -1,5 +1,5 @@
 //! Engine-facing speech event types. Consumed by the core; produced by a
-//! recognition adapter (fake in Milestone 1). Audio ranges are sample
+//! recognition adapter (real or fake). Audio ranges are sample
 //! offsets within a session.
 //! `SpeechEvent`; audio ranges are sample offsets within a session.
 

@@ -1,7 +1,6 @@
 //! whisper.cpp speech recognition: energy VAD segmentation, a recognition
-//! worker per session, and emulated streaming partials. Ported from the
-//! Milestone 0 spike (see `spikes/voice-spike/README.md` for the findings
-//! that chose these defaults).
+//! worker per session, and emulated streaming partials. The defaults come
+//! from the measurements in `spikes/voice-spike/README.md`.
 
 pub mod engine;
 pub mod vad;

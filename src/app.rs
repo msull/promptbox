@@ -331,7 +331,7 @@ impl PromptBoxApp {
             return;
         }
         self.window_level_applied = true;
-        // Same once-per-viewport moment is right for the saved theme.
+        // The saved theme also needs a live viewport, so apply it here.
         Self::apply_theme(ctx, self.settings.theme);
         let level = if self.settings.always_on_top {
             egui::WindowLevel::AlwaysOnTop

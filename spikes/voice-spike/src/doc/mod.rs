@@ -293,7 +293,6 @@ impl Document {
         let committed_range = match self.provisional_range() {
             None => range.clone(),
             Some(pr) if range.end <= pr.start => {
-                // Entirely before the span: anchor shifts by the size delta.
                 let delta = new.len() as isize - (range.end - range.start) as isize;
                 if let Some(p) = &mut self.provisional {
                     p.anchor = (p.anchor as isize + delta) as usize;

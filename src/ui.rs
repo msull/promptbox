@@ -549,7 +549,6 @@ fn editor(app: &mut PromptBoxApp, ui: &mut Ui) {
             Some(r) if valid(r) => {
                 job.append(&s[..r.start], 0.0, fmt(normal));
                 match &pending_command {
-                    // Command words being spoken: dimmed span, accented tail.
                     Some(c) if valid(c) && c.start >= r.start && c.end <= r.end => {
                         job.append(&s[r.start..c.start], 0.0, fmt(dim));
                         job.append(&s[c.start..c.end], 0.0, fmt(accent));

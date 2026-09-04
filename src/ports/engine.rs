@@ -1,6 +1,6 @@
 //! The pluggable speech-engine boundary: audio chunks in, speech events out.
 //! Called by the app orchestrator, never by an audio callback or the UI.
-//! Ported from the Milestone 0 spike, which established the bounds below.
+//! Queue bounds come from the measurements in `spikes/voice-spike/README.md`.
 
 use std::sync::atomic::{AtomicU64, Ordering};
 

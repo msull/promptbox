@@ -114,8 +114,8 @@ fn demo_dictation_shows_provisional_then_committed_text() {
 
 #[test]
 fn typing_after_dictation_continues_after_the_dictated_text() {
-    // Regression: egui's cursor stayed at the pre-dictation position, so
-    // later input (typed or dictated) landed before the previous sentence.
+    // Later input, typed or dictated, must land after the dictated text,
+    // not at wherever egui's own cursor was before dictation started.
     let mut harness = harness();
     type_prompt(&mut harness, "Intro.");
     harness.get_by_label("Debug").click();

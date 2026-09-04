@@ -510,7 +510,6 @@ impl AppCore {
                 ) {
                     self.last_progress = Some(now);
                     if self.stall_flagged {
-                        // Recovered: the recognizer is advancing again.
                         self.stall_flagged = false;
                         if self.status == SessionStatus::Degraded(STALL_MESSAGE.to_owned()) {
                             self.status = SessionStatus::Listening;

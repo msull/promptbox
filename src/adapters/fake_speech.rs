@@ -1,7 +1,7 @@
 //! Scripted speech events on a clock, so the listening/provisional/degraded
 //! states can be exercised end to end before a microphone exists. Emits the
-//! same event stream shape the whisper adapter produced in the spike:
-//! partials that occasionally revise an earlier word, then a Final.
+//! same event stream shape as the whisper adapter: partials that
+//! occasionally revise an earlier word, then a Final.
 
 use std::ops::Range;
 use std::time::Duration;

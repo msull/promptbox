@@ -246,7 +246,6 @@ pub fn extract(text: &str, trigger: &str) -> Extraction {
         }
         let after = i + span;
         let segment_end = next_trigger(&tokens, after, &trigger_key);
-        // "abort" anywhere before the next trigger cancels this command.
         if let Some(k) = (after..segment_end).find(|&k| close_enough(ABORT_WORD, &tokens[k].norm)) {
             commands.push(Command::Aborted);
             let last = if command_only { segment_end - 1 } else { k };

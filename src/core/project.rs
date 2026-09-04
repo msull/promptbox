@@ -1,5 +1,5 @@
-//! Projects: vocabulary and correction rules. Milestone 1 only needs a
-//! selectable placeholder list; persistence and rules arrive in Milestone 5.
+//! Projects: vocabulary and, later, correction rules. Currently a built-in
+//! placeholder list that is not persisted.
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Project {

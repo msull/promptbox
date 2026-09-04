@@ -1,5 +1,5 @@
-//! Concrete implementations of the ports, plus the fake speech source used
-//! until real audio arrives in Milestone 2.
+//! Concrete implementations of the ports, plus a scripted fake speech
+//! source for demos and tests.
 
 pub mod audio;
 pub mod clipboard;

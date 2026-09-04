@@ -298,8 +298,8 @@ impl Worker {
         if let Some(utt) = self.utt.take() {
             self.emit(SpeechEventKind::VoiceEnded { utterance: utt.id }, now..now);
             if self.cfg.finalize_on_stop {
-                // Run a real final pass over everything we have rather than
-                // reusing the last partial, which may be up to `step` stale.
+                // The last partial may be up to `step` behind the audio, so
+                // decode everything we have for the Final.
                 let text = self.infer(utt.start, now).unwrap_or_default();
                 self.emit(
                     SpeechEventKind::Final {
