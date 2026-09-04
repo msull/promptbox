@@ -513,88 +513,101 @@ const COMPACT_WIDTH: f32 = 460.0;
 
 fn top_bar(app: &mut PromptBoxApp, ui: &mut Ui) {
     let compact = ui.available_width() < COMPACT_WIDTH;
+    // Right-side controls are laid out first so they always fit; the
+    // status and project picker get whatever width is left and truncate.
     ui.horizontal(|ui| {
-        status_indicator(app, ui);
-        if !compact {
-            ui.separator();
-            ui.label("Project");
-            let selected = app.core().selected_project();
-            let names: Vec<String> = app
-                .core()
-                .projects()
-                .iter()
-                .map(|p| p.name.clone())
-                .collect();
-            let mut choice = selected;
-            egui::ComboBox::from_id_salt("project")
-                .selected_text(&names[selected])
-                .show_ui(ui, |ui| {
-                    for (i, name) in names.iter().enumerate() {
-                        ui.selectable_value(&mut choice, i, name);
-                    }
-                });
-            if choice != selected {
-                app.dispatch(AppAction::SelectProject(choice));
-            }
-            if ui
-                .selectable_label(app.project_editor.is_some(), "Edit")
-                .on_hover_text("Edit projects: vocabulary, corrections, glossary, AI context")
-                .clicked()
-            {
-                if app.project_editor.is_some() {
-                    app.project_editor = None;
-                } else {
-                    app.open_project_editor();
-                }
-            }
-        }
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            if ui
-                .selectable_label(app.show_settings, "⚙")
-                .on_hover_text("Settings: OpenAI key, model, trigger word")
-                .clicked()
-            {
-                app.show_settings = !app.show_settings;
-            }
-            let mut pinned = app.always_on_top();
-            if ui
-                .toggle_value(&mut pinned, "Pin")
-                .on_hover_text("Pin: keep this window above others")
-                .changed()
-            {
-                app.set_always_on_top(ui.ctx(), pinned);
-            }
-            if ui
-                .button("Dock")
-                .on_hover_text("Dock: shrink and move to the next screen corner")
-                .clicked()
-            {
-                app.dock_next_corner(ui.ctx());
-            }
-            if compact {
-                listen_controls(app, ui, true);
-                return;
-            }
-            ui.menu_button("Debug", |ui| {
-                if app.is_demo_running() {
-                    if ui.button("Stop demo").clicked() {
-                        app.stop_demo();
-                    }
-                } else {
-                    if ui.button("Demo dictation").clicked() {
-                        app.start_demo(false);
-                    }
-                    if ui.button("Demo with gap").clicked() {
-                        app.start_demo(true);
-                    }
+            window_controls(app, ui, compact);
+            ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                status_indicator(app, ui);
+                if !compact {
+                    project_picker(app, ui);
                 }
             });
-            listen_controls(app, ui, false);
         });
     });
     if !app.model_present() {
         model_download_row(app, ui);
     }
+}
+
+fn project_picker(app: &mut PromptBoxApp, ui: &mut Ui) {
+    ui.separator();
+    ui.label("Project");
+    let selected = app.core().selected_project();
+    let names: Vec<String> = app
+        .core()
+        .projects()
+        .iter()
+        .map(|p| p.name.clone())
+        .collect();
+    let mut choice = selected;
+    egui::ComboBox::from_id_salt("project")
+        .selected_text(&names[selected])
+        .show_ui(ui, |ui| {
+            for (i, name) in names.iter().enumerate() {
+                ui.selectable_value(&mut choice, i, name);
+            }
+        });
+    if choice != selected {
+        app.dispatch(AppAction::SelectProject(choice));
+    }
+    if ui
+        .selectable_label(app.project_editor.is_some(), "Edit")
+        .on_hover_text("Edit projects: vocabulary, corrections, glossary, AI context")
+        .clicked()
+    {
+        if app.project_editor.is_some() {
+            app.project_editor = None;
+        } else {
+            app.open_project_editor();
+        }
+    }
+}
+
+/// Settings, Pin, Dock, Debug, and Listen/Stop, right-aligned.
+fn window_controls(app: &mut PromptBoxApp, ui: &mut Ui, compact: bool) {
+    if ui
+        .selectable_label(app.show_settings, "⚙")
+        .on_hover_text("Settings: OpenAI key, model, trigger word")
+        .clicked()
+    {
+        app.show_settings = !app.show_settings;
+    }
+    let mut pinned = app.always_on_top();
+    if ui
+        .toggle_value(&mut pinned, "Pin")
+        .on_hover_text("Pin: keep this window above others")
+        .changed()
+    {
+        app.set_always_on_top(ui.ctx(), pinned);
+    }
+    if ui
+        .button("Dock")
+        .on_hover_text("Dock: shrink and move to the next screen corner")
+        .clicked()
+    {
+        app.dock_next_corner(ui.ctx());
+    }
+    if compact {
+        listen_controls(app, ui, true);
+        return;
+    }
+    ui.menu_button("Debug", |ui| {
+        if app.is_demo_running() {
+            if ui.button("Stop demo").clicked() {
+                app.stop_demo();
+            }
+        } else {
+            if ui.button("Demo dictation").clicked() {
+                app.start_demo(false);
+            }
+            if ui.button("Demo with gap").clicked() {
+                app.start_demo(true);
+            }
+        }
+    });
+    listen_controls(app, ui, false);
 }
 
 fn listen_controls(app: &mut PromptBoxApp, ui: &mut Ui, compact: bool) {
@@ -708,11 +721,19 @@ fn status_indicator(app: &mut PromptBoxApp, ui: &mut Ui) {
             true,
         ),
     };
-    ui.label(RichText::new(format!("{icon} {text}")).color(color));
-    level_meter(ui, app.core().audio_level_db(), app.is_live());
+    // A long error must not push the rest of the bar off screen: cap the
+    // label, show the full message on hover, and keep Dismiss next to it.
+    let reserved = if ack { 110.0 } else { 60.0 };
+    let max = (ui.available_width() - reserved).clamp(60.0, 260.0);
+    ui.scope(|ui| {
+        ui.set_max_width(max);
+        ui.add(egui::Label::new(RichText::new(format!("{icon} {text}")).color(color)).truncate())
+            .on_hover_text(&text);
+    });
     if ack && ui.small_button("Dismiss").clicked() {
         app.dispatch(AppAction::AcknowledgeStatus);
     }
+    level_meter(ui, app.core().audio_level_db(), app.is_live());
 }
 
 fn bottom_bar(app: &mut PromptBoxApp, ui: &mut Ui) {

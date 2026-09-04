@@ -543,6 +543,33 @@ fn draft_is_restored_on_startup() {
 }
 
 #[test]
+fn a_long_error_keeps_the_top_bar_buttons_reachable() {
+    use promptbox::core::AppAction;
+    let mut harness = Harness::builder()
+        .with_size(egui::vec2(300.0, 330.0))
+        .build_eframe(|_cc| {
+            PromptBoxApp::with_services(
+                Box::new(FakeClipboard::default()),
+                Box::new(MemoryStore::default()),
+            )
+        });
+    harness.state_mut().dispatch(AppAction::EngineUnavailable(
+        "Microphone error: Device disconnected while the stream was running, please reconnect"
+            .into(),
+    ));
+    harness.run_steps(2);
+    let listen = harness.get_by_label("Listen");
+    let rect = listen.rect();
+    assert!(
+        rect.max.x <= 300.0,
+        "Listen button pushed off screen: {rect:?}"
+    );
+    harness.get_by_label("Dismiss").click();
+    harness.run_steps(2);
+    harness.get_by_label("○ Idle");
+}
+
+#[test]
 fn every_symbol_in_the_ui_has_a_glyph_with_the_fallback_font() {
     let ctx = egui::Context::default();
     promptbox::ui::install_symbol_font(&ctx);
