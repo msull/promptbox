@@ -1,0 +1,26 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#3a8dde"/>
+      <stop offset="1" stop-color="#1d4f8a"/>
+    </linearGradient>
+    <linearGradient id="mic" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffffff"/>
+      <stop offset="1" stop-color="#dce9f7"/>
+    </linearGradient>
+  </defs>
+  <!-- macOS-style rounded square, inset like system icons -->
+  <rect x="100" y="100" width="824" height="824" rx="184" fill="url(#bg)"/>
+  <!-- prompt box: a rounded text field with a caret -->
+  <rect x="222" y="600" width="580" height="150" rx="40" fill="#ffffff" fill-opacity="0.16" stroke="#ffffff" stroke-opacity="0.55" stroke-width="14"/>
+  <rect x="292" y="640" width="200" height="30" rx="15" fill="#ffffff" fill-opacity="0.75"/>
+  <rect x="292" y="694" width="130" height="30" rx="15" fill="#ffffff" fill-opacity="0.45"/>
+  <rect x="704" y="628" width="16" height="94" rx="8" fill="#ffd166"/>
+  <!-- microphone -->
+  <rect x="432" y="230" width="160" height="270" rx="80" fill="url(#mic)"/>
+  <path d="M372 400 a140 140 0 0 0 280 0" fill="none" stroke="#ffffff" stroke-width="34" stroke-linecap="round"/>
+  <rect x="495" y="520" width="34" height="42" fill="#ffffff"/>
+  <!-- sound arcs -->
+  <path d="M300 300 a130 130 0 0 0 0 200" fill="none" stroke="#ffd166" stroke-width="26" stroke-linecap="round" stroke-opacity="0.9"/>
+  <path d="M724 300 a130 130 0 0 1 0 200" fill="none" stroke="#ffd166" stroke-width="26" stroke-linecap="round" stroke-opacity="0.9"/>
+</svg>

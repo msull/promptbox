@@ -243,6 +243,7 @@ cargo fmt --all                                      # format
 so Spotlight and Launchpad find it and the microphone / Accessibility
 grants stick to the app. A bundled app starts with `/` as its working
 directory, so it reads the API key from Settings rather than a `.env`.
+The icon is `assets/PromptBox.svg`; `scripts/icon.sh` rebuilds the `.icns`.
 
 Dev aids: `PROMPTBOX_AUTOSTART=1` starts listening at launch;
 `PROMPTBOX_FAKE_MIC=/path/to/16k-mono.wav` feeds a WAV through the real
