@@ -28,6 +28,13 @@ const CLEAR: KeyboardShortcut =
 pub fn draw(app: &mut PromptBoxApp, ui: &mut Ui) {
     handle_shortcuts(app, ui);
     egui::Panel::top("top").show(ui, |ui| top_bar(app, ui));
+    // Outermost first: the notification strip sits below the buttons and
+    // keeps its height whether or not a toast is showing, so nothing above
+    // it reflows when one appears.
+    egui::Panel::bottom("notifications")
+        .exact_size(NOTIFICATION_STRIP_HEIGHT)
+        .resizable(false)
+        .show(ui, |ui| notification_strip(app, ui));
     egui::Panel::bottom("bottom").show(ui, |ui| bottom_bar(app, ui));
     egui::Panel::bottom("ai-row").show(ui, |ui| ai_row(app, ui));
     egui::CentralPanel::default().show(ui, |ui| editor(app, ui));
@@ -276,6 +283,21 @@ fn handle_shortcuts(app: &mut PromptBoxApp, ui: &mut Ui) {
             app.start_listening();
         }
     }
+}
+
+/// Height of the always-present toast strip at the bottom of the window.
+const NOTIFICATION_STRIP_HEIGHT: f32 = 22.0;
+
+fn notification_strip(app: &PromptBoxApp, ui: &mut Ui) {
+    ui.horizontal_centered(|ui| {
+        if let Some(toast) = app.core().toast() {
+            let mut text = RichText::new(&toast.text).small();
+            if toast.is_error {
+                text = text.color(ui.visuals().error_fg_color);
+            }
+            ui.label(text).on_hover_text(&toast.text);
+        }
+    });
 }
 
 /// Below this width the top bar drops the project picker and Debug menu
@@ -534,13 +556,6 @@ fn bottom_bar(app: &mut PromptBoxApp, ui: &mut Ui) {
             .clicked()
         {
             app.show_commands = !app.show_commands;
-        }
-        if let Some(toast) = app.core().toast() {
-            let mut text = RichText::new(&toast.text);
-            if toast.is_error {
-                text = text.color(ui.visuals().error_fg_color);
-            }
-            ui.label(text);
         }
     });
 }
