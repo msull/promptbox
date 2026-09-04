@@ -94,7 +94,7 @@ sentence." The **Commands** button shows this list in the app.
 | Say | Does |
 |---|---|
 | Zevro delete sentence / scratch that | Delete last sentence |
-| Zevro delete paragraph | Delete last paragraph |
+| Zevro delete paragraph / DP | Delete last paragraph |
 | Zevro undo / redo | Undo / redo |
 | Zevro new line / new paragraph | Line break / paragraph break |
 | Zevro clear | Clear (undoable) |

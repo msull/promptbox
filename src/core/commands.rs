@@ -92,6 +92,9 @@ const GRAMMAR: &[(&[&str], Command)] = &[
     (&["scratch", "that"], Command::DeleteSentence),
     (&["delete", "last", "paragraph"], Command::DeleteParagraph),
     (&["delete", "paragraph"], Command::DeleteParagraph),
+    // "DP" arrives as "DP", "D.P." (punctuation stripped), or "D P".
+    (&["dp"], Command::DeleteParagraph),
+    (&["d", "p"], Command::DeleteParagraph),
     (&["undo"], Command::Undo),
     (&["redo"], Command::Redo),
     (&["new", "line"], Command::Newline),
@@ -522,6 +525,17 @@ mod tests {
         assert!(entries.iter().all(|e| !e.command.description().is_empty()));
         assert_eq!(entries[0].command, Command::DeleteSentence);
         assert!(entries[0].phrases.contains(&"scratch that".to_owned()));
+    }
+
+    #[test]
+    fn dp_is_short_for_delete_paragraph() {
+        for spoken in ["Zevro DP", "Zevro D.P.", "Zevro D P.", "zebro dp"] {
+            let got = extract(spoken, DEFAULT_TRIGGER);
+            assert_eq!(got.commands, vec![Command::DeleteParagraph], "{spoken}");
+            assert_eq!(got.dictation, "", "{spoken}");
+        }
+        let got = extract("Zevro DP", DEFAULT_TRIGGER);
+        assert_eq!(got.commands, vec![Command::DeleteParagraph]);
     }
 
     #[test]
