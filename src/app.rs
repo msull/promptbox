@@ -19,6 +19,9 @@ use crate::ports::engine::{AudioChunk, EngineConfig, PushError, SpeechEngine};
 use crate::ports::history::HistoryStore;
 use crate::ports::speech::SpeechEventKind;
 
+/// Audio the app will hold for a slow engine before giving up (30 s).
+const BACKLOG_LIMIT_CHUNKS: usize = 1500;
+
 /// Where the whisper engine is in its lifecycle. Loading happens on a
 /// thread because a first Metal shader compile can take seconds.
 pub enum Recognizer {
@@ -51,6 +54,8 @@ pub struct PromptBoxApp {
     model_path: PathBuf,
     download: Option<Download>,
     live_chunks_seen: u64,
+    /// Chunks the engine could not accept yet; retried next frame.
+    backlog: std::collections::VecDeque<AudioChunk>,
 }
 
 impl PromptBoxApp {
@@ -86,6 +91,7 @@ impl PromptBoxApp {
             model_path: model::model_path(DEFAULT_MODEL),
             download: None,
             live_chunks_seen: 0,
+            backlog: std::collections::VecDeque::new(),
         };
         app.dispatch(AppAction::RecentLoaded(recent));
         app.dispatch(AppAction::DraftLoaded(draft));
@@ -238,6 +244,13 @@ impl PromptBoxApp {
     pub fn stop_listening(&mut self) {
         if self.live.take().is_some() {
             if let Recognizer::Ready(engine) = &mut self.recognizer {
+                // Flush what we can before asking the worker to finish.
+                while let Some(c) = self.backlog.pop_front() {
+                    if engine.push_audio(c).is_err() {
+                        break;
+                    }
+                }
+                self.backlog.clear();
                 engine.stop();
             }
             self.stopping = true;
@@ -357,12 +370,20 @@ impl PromptBoxApp {
                 chunks.push(c);
             }
             let n_chunks = chunks.len() as u64;
+            self.backlog.extend(chunks);
             if let Recognizer::Ready(engine) = &mut self.recognizer {
-                for c in chunks {
-                    if engine.push_audio(c) == Err(PushError::QueueFull) {
-                        // The next chunk's offset jump surfaces as AudioGap.
-                        log::warn!("engine audio queue full; dropping a chunk");
+                while let Some(c) = self.backlog.pop_front() {
+                    if let Err(PushError::QueueFull) = engine.push_audio(c.clone()) {
+                        self.backlog.push_front(c);
+                        break;
                     }
+                }
+                // Only give up if the engine has been stuck for a long time;
+                // the resulting offset jump surfaces as AudioGap.
+                if self.backlog.len() > BACKLOG_LIMIT_CHUNKS {
+                    let drop = self.backlog.len() - BACKLOG_LIMIT_CHUNKS;
+                    log::warn!("engine stuck; dropping {drop} chunks of audio");
+                    self.backlog.drain(..drop);
                 }
             }
             if self.core.doc().is_empty() || level > crate::core::action::VOICE_DB {

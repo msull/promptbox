@@ -70,7 +70,7 @@ impl Default for EngineConfig {
             threads: 4,
             no_context: true,
             hint: None,
-            audio_queue: 50,
+            audio_queue: 500, // 10 s of 20 ms chunks
             event_queue: 256,
             finalize_on_stop: true,
         }

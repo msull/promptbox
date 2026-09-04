@@ -339,9 +339,15 @@ impl Worker {
 
         let t = Instant::now();
         let result = self.state.full(params, &window);
+        let took = t.elapsed();
         self.counters.add(&self.counters.full_calls, 1);
         self.counters
-            .add(&self.counters.full_time_us, t.elapsed().as_micros() as u64);
+            .add(&self.counters.full_time_us, took.as_micros() as u64);
+        log::debug!(
+            "whisper full: {:.1} s window in {:.0} ms",
+            window.len() as f64 / 16_000.0,
+            took.as_secs_f64() * 1000.0
+        );
         if let Err(e) = result {
             self.emit(
                 SpeechEventKind::Error(SpeechError::Engine(format!("{e:?}"))),

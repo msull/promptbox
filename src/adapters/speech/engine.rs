@@ -41,6 +41,26 @@ impl WhisperEngine {
             .with_context(|| format!("non-utf8 model path {}", model.display()))?;
         let ctx = WhisperContext::new_with_params(path, params)
             .with_context(|| format!("load model {}", model.display()))?;
+        // Warm up: the first inference compiles Metal pipelines and can
+        // take seconds; do it here rather than on the user's first words.
+        {
+            let mut state = ctx.create_state().context("create warm-up state")?;
+            let mut p =
+                whisper_rs::FullParams::new(whisper_rs::SamplingStrategy::Greedy { best_of: 1 });
+            p.set_language(Some("en"));
+            p.set_n_threads(cfg.threads);
+            p.set_print_special(false);
+            p.set_print_progress(false);
+            p.set_print_realtime(false);
+            p.set_print_timestamps(false);
+            let silence = vec![0.0f32; 16_000 * 3];
+            let t = Instant::now();
+            state.full(p, &silence).context("warm-up inference")?;
+            log::info!(
+                "whisper warm-up took {:.0} ms",
+                t.elapsed().as_secs_f64() * 1000.0
+            );
+        }
         Ok(Self {
             ctx: Arc::new(ctx),
             cfg,
