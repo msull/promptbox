@@ -1,11 +1,13 @@
 #!/bin/sh
 # Regenerates assets/PromptBox.icns from assets/PromptBox.svg using only
-# tools that ship with macOS (qlmanage, sips, iconutil).
+# tools that ship with macOS (swift + AppKit for a transparent render,
+# sips, iconutil). Quick Look's thumbnailer paints a white background, so
+# it is not used.
 set -eu
 cd "$(dirname "$0")/.."
 WORK=$(mktemp -d)
-qlmanage -t -s 1024 -o "$WORK" assets/PromptBox.svg >/dev/null 2>&1
-SRC="$WORK/PromptBox.svg.png"
+SRC="$WORK/PromptBox.png"
+swift scripts/render-icon.swift assets/PromptBox.svg "$SRC" 1024
 SET="$WORK/PromptBox.iconset"
 mkdir -p "$SET"
 for s in 16 32 128 256 512; do

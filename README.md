@@ -249,9 +249,20 @@ signature. Ad-hoc signing, the default, gives every build a new identity,
 so the script resets the grant on install and the app asks again on the
 next launch. To keep the grant across rebuilds, create a self-signed
 certificate once: Keychain Access → Certificate Assistant → Create a
-Certificate, name `Prompt Box Dev`, type *Code Signing*. The script uses
-it automatically (or set `CODESIGN_IDENTITY` to another name).
-The icon is `assets/PromptBox.svg`; `scripts/icon.sh` rebuilds the `.icns`.
+Certificate, name `Prompt Box Dev`, type *Code Signing*. A self-signed
+certificate is not trusted until you say so; either open it in Keychain
+Access and set Code Signing to Always Trust, or run:
+
+```sh
+security find-certificate -c "Prompt Box Dev" -p > /tmp/dev.pem
+security add-trusted-cert -p codeSign -k ~/Library/Keychains/login.keychain-db /tmp/dev.pem
+```
+
+`security find-identity -v -p codesigning` should then list it. The
+bundle script uses it automatically (or set `CODESIGN_IDENTITY` to another
+name).
+The icon is `assets/PromptBox.svg`; `scripts/icon.sh` rebuilds the `.icns`
+(rendering through AppKit, so the background stays transparent).
 
 Dev aids: `PROMPTBOX_AUTOSTART=1` starts listening at launch;
 `PROMPTBOX_FAKE_MIC=/path/to/16k-mono.wav` feeds a WAV through the real
