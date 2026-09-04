@@ -207,3 +207,7 @@ clone:
 ```sh
 git config core.hooksPath .githooks
 ```
+
+## License
+
+MIT, see `LICENSE`.
