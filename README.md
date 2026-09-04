@@ -2,13 +2,15 @@
 
 A desktop GUI app built in Rust with [egui](https://docs.rs/egui) / [eframe](https://docs.rs/eframe).
 
+Requires Rust 1.95 or newer.
+
 ## Commands
 
 ```sh
-cargo run                                   # launch the app
-cargo test                                  # unit tests + headless UI tests
-cargo clippy --all-targets -- -D warnings   # lint
-cargo fmt                                   # format
+cargo run --locked                                   # launch the app
+cargo test --locked                                  # unit tests + headless UI tests
+cargo clippy --locked --all-targets -- -D warnings   # lint
+cargo fmt --all                                      # format
 ```
 
 ## Layout
@@ -24,7 +26,7 @@ Keep logic in plain methods on `PromptBoxApp` and unit test them directly. Keep 
 
 ## Pre-commit hook
 
-`.githooks/pre-commit` runs `cargo fmt`, `cargo clippy`, and `cargo test` before each commit and aborts the commit on failure. Enable it once per clone:
+`.githooks/pre-commit` checks formatting, runs Clippy, and runs the tests before each commit. It never modifies or stages files. Enable it once per clone:
 
 ```sh
 git config core.hooksPath .githooks
