@@ -34,6 +34,22 @@ but only after both the clipboard write and the history save succeed; if
 either fails the prompt stays and a toast says why. The clear after Send is
 undoable.
 
+### Sending into another app
+
+When another app is in front, Send also pastes the prompt into it (⌘V) and
+presses Return, so "Zevro send" delivers a finished prompt straight into a
+chat box without touching the keyboard. It pastes rather than types: a
+multi-line prompt typed key by key would submit at every newline. From
+Prompt Box's own window, Send only copies, since the keystrokes would land
+back in Prompt Box.
+
+This needs the Accessibility permission (System Settings → Privacy &
+Security → Accessibility) for the process that launched Prompt Box, the
+same as the microphone. Settings shows whether it is granted and can
+request it. If pasting fails, the prompt is kept and a toast says why; the
+clipboard still holds it. Both the paste and the trailing Return can be
+switched off in Settings.
+
 ### Shortcuts
 
 | Keys | Action |
@@ -125,8 +141,9 @@ per call and totalled in Settings.
 ## Settings and data
 
 ⚙ in the top bar opens Settings: OpenAI API key (stored masked), model,
-and voice trigger word, which Save persists, and appearance (Auto follows
-the system, or Light / Dark), which persists as soon as it is clicked.
+and voice trigger word, which Save persists; and the Send paste options
+and appearance (Auto follows the system, or Light / Dark), which persist
+as soon as they are clicked.
 
 Everything lives in the platform data directory, `~/Library/Application
 Support/promptbox` on macOS:
@@ -168,11 +185,13 @@ src/ports/               traits the core needs
   clipboard.rs           clipboard that reports failure
   history.rs             sent prompts, draft, settings
   ai.rs                  prompt rewriter
+  typist.rs              keyboard injection into the focused app
 src/adapters/
   audio.rs               cpal capture -> ring buffer -> resample -> 20 ms chunks
   speech/                whisper.cpp engine: VAD, worker per session, partials
   model.rs               model path and background download
   openai.rs              chat-completions rewriter, .env reader
+  typist.rs              enigo paste + Return, Accessibility check
   clipboard.rs, persistence.rs, fake_speech.rs
 src/app.rs               PromptBoxApp: owns core + adapters + recognizer + mic; runs effects
 src/ui.rs                egui drawing and input -> actions (edit diffing, shortcuts)
