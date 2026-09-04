@@ -198,6 +198,7 @@ mod tests {
         store
             .save_settings(&Settings {
                 always_on_top: true,
+                ..Settings::default()
             })
             .unwrap();
         assert!(store.load_settings().unwrap().always_on_top);

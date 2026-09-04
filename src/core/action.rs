@@ -223,6 +223,14 @@ impl AppCore {
         &self.trigger
     }
 
+    /// Changes the trigger word (from settings). Empty input is ignored.
+    pub fn set_trigger(&mut self, trigger: &str) {
+        let t = trigger.trim();
+        if !t.is_empty() {
+            t.clone_into(&mut self.trigger);
+        }
+    }
+
     /// Rendered-coordinate range of a command being spoken inside the live
     /// provisional span, for highlighting.
     #[must_use]

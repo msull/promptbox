@@ -6,10 +6,15 @@
 //! casing and punctuation. Words after a trigger that match nothing are
 //! dropped and reported, never dictated: the speaker meant a command.
 //!
-//! Recognition is imperfect ("send" arrives as "sand", "Zevro" as "Zebro"),
-//! so words are compared with a one-substitution tolerance for words of
-//! four letters or more. Insertions/deletions are not tolerated so that
-//! "zero" cannot open the command channel.
+//! Recognition is imperfect. Command words are compared with a
+//! one-substitution tolerance for words of four letters or more ("sand"
+//! is "send"). The trigger is matched on a phonetic key (b/v merged,
+//! vowels dropped, doubled letters collapsed), optionally across two
+//! adjacent tokens, because real speech produced "Zebro", "Zebra",
+//! "Zev Bro" and "zebbro" for "Zevro". "zero" keys to "zr" and never
+//! matches. An utterance that *starts* with the trigger is treated as a
+//! command only: words after the command phrase are ignored, so a garbled
+//! "delete laughs" still deletes the sentence.
 
 use std::ops::Range;
 
@@ -54,6 +59,7 @@ impl Command {
 const GRAMMAR: &[(&[&str], Command)] = &[
     (&["delete", "last", "sentence"], Command::DeleteSentence),
     (&["delete", "sentence"], Command::DeleteSentence),
+    (&["delete"], Command::DeleteSentence),
     (&["scratch", "that"], Command::DeleteSentence),
     (&["delete", "last", "paragraph"], Command::DeleteParagraph),
     (&["delete", "paragraph"], Command::DeleteParagraph),
@@ -107,6 +113,44 @@ fn tokenize(text: &str) -> Vec<Token> {
     out
 }
 
+/// Consonant skeleton used to match the trigger word: lowercase letters
+/// only, `v` folded into `b`, vowels dropped after the first letter,
+/// doubled letters collapsed. "zevro" / "zebro" / "zebra" / "zebbro" all
+/// key to "zbr".
+fn phonetic_key(word: &str) -> String {
+    let mut out = String::new();
+    for (i, c) in word.chars().filter(|c| c.is_alphabetic()).enumerate() {
+        let c = match c.to_ascii_lowercase() {
+            'v' => 'b',
+            c => c,
+        };
+        if i > 0 && matches!(c, 'a' | 'e' | 'i' | 'o' | 'u' | 'y') {
+            continue;
+        }
+        if out.ends_with(c) {
+            continue;
+        }
+        out.push(c);
+    }
+    out
+}
+
+/// Does the token at `i` (possibly joined with the next one) sound like
+/// the trigger? Returns how many tokens it spans.
+fn trigger_span(tokens: &[Token], i: usize, trigger_key: &str) -> Option<usize> {
+    let one = &tokens[i].norm;
+    if close_enough(trigger_key, &phonetic_key(one)) && phonetic_key(one).len() >= 3 {
+        return Some(1);
+    }
+    if let Some(next) = tokens.get(i + 1) {
+        let joined = format!("{one}{}", next.norm);
+        if phonetic_key(&joined) == trigger_key {
+            return Some(2);
+        }
+    }
+    None
+}
+
 /// Same length and at most one differing letter (for words >= 4 letters).
 fn close_enough(want: &str, got: &str) -> bool {
     if want == got {
@@ -133,24 +177,39 @@ fn normalize(word: &str) -> String {
 /// case- and punctuation-insensitively).
 #[must_use]
 pub fn extract(text: &str, trigger: &str) -> Extraction {
-    let trigger = normalize(trigger);
+    let trigger_key = phonetic_key(&normalize(trigger));
     let tokens = tokenize(text);
+    let command_only = tokens
+        .first()
+        .is_some_and(|_| trigger_span(&tokens, 0, &trigger_key).is_some());
     let mut dictation_parts: Vec<&str> = Vec::new();
     let mut commands = Vec::new();
     let mut keep_from = 0usize; // byte offset where uncommitted dictation starts
     let mut i = 0;
     while i < tokens.len() {
-        if !close_enough(&trigger, &tokens[i].norm) {
+        let Some(span) = trigger_span(&tokens, i, &trigger_key) else {
             i += 1;
             continue;
-        }
+        };
         let before = text[keep_from..tokens[i].range.start].trim();
         if !before.is_empty() {
             dictation_parts.push(before);
         }
-        let (cmd, used) = match_command(&tokens[i + 1..], &trigger);
+        let after = i + span;
+        let (cmd, mut used) = match_command(&tokens[after..], &trigger_key);
+        if command_only && !matches!(cmd, Command::Unknown(_)) {
+            // Whole utterance is a command: swallow any garbled tail up to
+            // the next trigger instead of dictating it.
+            used = next_trigger(&tokens, after, &trigger_key) - after;
+        }
         commands.push(cmd);
-        let last = i + used; // index of the last consumed token
+        // Index of the last consumed token (the trigger itself if nothing
+        // followed it).
+        let last = if used == 0 {
+            after - 1
+        } else {
+            after + used - 1
+        };
         keep_from = tokens[last].range.end;
         i = last + 1;
     }
@@ -164,10 +223,17 @@ pub fn extract(text: &str, trigger: &str) -> Extraction {
     }
 }
 
+/// Index of the next trigger token at or after `from`, or `tokens.len()`.
+fn next_trigger(tokens: &[Token], from: usize, trigger_key: &str) -> usize {
+    (from..tokens.len())
+        .find(|&j| trigger_span(tokens, j, trigger_key).is_some())
+        .unwrap_or(tokens.len())
+}
+
 /// Returns the command and how many tokens were consumed after the
 /// trigger. Unknown consumes everything up to the next trigger so the
 /// words are reported, not dictated.
-fn match_command(after: &[Token], trigger: &str) -> (Command, usize) {
+fn match_command(after: &[Token], trigger_key: &str) -> (Command, usize) {
     let mut best: Option<(Command, usize)> = None;
     for (phrase, cmd) in GRAMMAR {
         let n = phrase.len();
@@ -182,10 +248,7 @@ fn match_command(after: &[Token], trigger: &str) -> (Command, usize) {
         }
     }
     best.unwrap_or_else(|| {
-        let n = after
-            .iter()
-            .position(|t| close_enough(trigger, &t.norm))
-            .unwrap_or(after.len());
+        let n = next_trigger(after, 0, trigger_key);
         let heard = after[..n]
             .iter()
             .map(|t| t.norm.as_str())
@@ -199,11 +262,11 @@ fn match_command(after: &[Token], trigger: &str) -> (Command, usize) {
 /// the UI can highlight the command being spoken before the Final lands.
 #[must_use]
 pub fn pending_command_offset(partial: &str, trigger: &str) -> Option<usize> {
-    let trigger = normalize(trigger);
-    tokenize(partial)
-        .iter()
-        .find(|t| close_enough(&trigger, &t.norm))
-        .map(|t| t.range.start)
+    let key = phonetic_key(&normalize(trigger));
+    let tokens = tokenize(partial);
+    (0..tokens.len())
+        .find(|&i| trigger_span(&tokens, i, &key).is_some())
+        .map(|i| tokens[i].range.start)
 }
 
 #[cfg(test)]
@@ -239,9 +302,15 @@ mod tests {
                 vec![DeleteSentence],
             ),
             (
-                "command then dictation",
+                "command-only utterance ignores its tail",
                 "Zevro new paragraph Then continue here.",
-                "Then continue here.",
+                "",
+                vec![NewParagraph],
+            ),
+            (
+                "mid-sentence command keeps the tail",
+                "Start. Zevro new paragraph Then continue here.",
+                "Start. Then continue here.",
                 vec![NewParagraph],
             ),
             (
@@ -299,6 +368,47 @@ mod tests {
             assert_eq!(got.dictation, dictation, "{name}: dictation");
             assert_eq!(got.commands, commands, "{name}: commands");
         }
+    }
+
+    #[test]
+    fn real_world_trigger_renderings_from_the_microphone() {
+        use Command::{Copy, DeleteSentence, NewParagraph, Send, Unknown};
+        // Verbatim whisper finals from a real session saying "Zevro ...".
+        let cases: Vec<(&str, Vec<Command>)> = vec![
+            ("Zebro Sand", vec![Send]),
+            ("Zebro Delete laughs", vec![DeleteSentence]),
+            ("Zebra new paragraph", vec![NewParagraph]),
+            ("Zev Bro, new paragraph.", vec![NewParagraph]),
+            ("Zebro", vec![Unknown(String::new())]),
+            ("zebro delete", vec![DeleteSentence]),
+            ("zebbro copy", vec![Copy]),
+        ];
+        for (heard, want) in cases {
+            let got = x(heard);
+            assert_eq!(got.commands, want, "{heard:?}");
+            assert_eq!(got.dictation, "", "{heard:?} should leave no dictation");
+        }
+        // Known miss: a different first consonant is not the trigger.
+        assert!(x("rebro copy").commands.is_empty());
+    }
+
+    #[test]
+    fn phonetic_key_folds_expected_variants_and_not_zero() {
+        for w in ["zevro", "Zebro", "zebra", "zebbro", "zevbro", "ZEVRO"] {
+            assert_eq!(phonetic_key(w), "zbr", "{w}");
+        }
+        assert_eq!(phonetic_key("zero"), "zr");
+        assert_ne!(phonetic_key("zipper"), "zbr");
+    }
+
+    #[test]
+    fn command_only_utterance_swallows_garbled_tail_but_mid_sentence_keeps_it() {
+        let got = x("Zevro new paragraph then continue");
+        assert_eq!(got.commands, vec![Command::NewParagraph]);
+        assert_eq!(got.dictation, "");
+        let got = x("Keep this. Zevro new paragraph then continue");
+        assert_eq!(got.commands, vec![Command::NewParagraph]);
+        assert_eq!(got.dictation, "Keep this. then continue");
     }
 
     #[test]

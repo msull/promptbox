@@ -31,10 +31,18 @@ its own: "…move it into the service layer. Zevro delete sentence."
 Commands are extracted only from finalized utterances, so each runs exactly
 once. While you are still speaking, the command words show in amber inside
 the dimmed provisional text and disappear when the utterance finalizes.
-Words are matched with a one-letter tolerance ("sand" counts as "send");
-anything after the trigger that matches nothing is dropped and reported in
-a toast, never typed into the prompt. The trigger is added to whisper's
-vocabulary hint so it is recognized reliably.
+Real microphones render the trigger many ways ("Zebro", "Zebra", "Zev
+Bro", "zebbro"), so it is matched on a consonant skeleton (b/v merged,
+vowels dropped), optionally across two words; "zero" never matches.
+Command words tolerate a one-letter slip ("sand" counts as "send"). An
+utterance that starts with the trigger is treated as a command only, so a
+garbled tail after the command is ignored. Anything after the trigger
+that matches nothing is dropped and reported in a toast, never typed into
+the prompt. Example command phrases are added to whisper's prompt so the
+trigger and grammar are recognized reliably.
+
+To use a different trigger word, set `"trigger": "yourword"` in
+`settings.json` (see data directory below) and restart.
 
 ## First run
 

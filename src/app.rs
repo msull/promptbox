@@ -147,6 +147,7 @@ impl PromptBoxApp {
             window_level_applied: false,
             docked_corner: None,
         };
+        app.core.set_trigger(&app.settings.trigger);
         app.dispatch(AppAction::RecentLoaded(recent));
         app.dispatch(AppAction::DraftLoaded(draft));
         app
@@ -323,17 +324,24 @@ impl PromptBoxApp {
         self.recognizer = Recognizer::Loading(rx);
     }
 
-    /// Project vocabulary plus the trigger word, so whisper is primed to
-    /// hear the command channel.
+    /// Project vocabulary plus example command phrases, so whisper is
+    /// primed to hear the trigger word and the grammar after it.
     fn vocabulary_hint(&self) -> String {
+        use std::fmt::Write as _;
         let p = &self.core.projects()[self.core.selected_project()];
-        let mut words: Vec<String> = p.vocabulary.clone();
         let mut trigger = self.core.trigger().to_owned();
         if let Some(first) = trigger.get_mut(0..1) {
             first.make_ascii_uppercase();
         }
-        words.push(trigger);
-        words.join(", ")
+        let mut hint = p.vocabulary.join(", ");
+        if !hint.is_empty() {
+            hint.push_str(". ");
+        }
+        let _ = write!(
+            hint,
+            "{trigger} delete sentence. {trigger} new paragraph. {trigger} send. {trigger} copy."
+        );
+        hint
     }
 
     fn open_microphone(&mut self) {

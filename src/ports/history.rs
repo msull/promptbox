@@ -20,6 +20,9 @@ pub struct Settings {
     /// Keep the window above other windows.
     #[serde(default)]
     pub always_on_top: bool,
+    /// Voice-command trigger word; empty means the built-in default.
+    #[serde(default)]
+    pub trigger: String,
 }
 
 pub trait HistoryStore {
