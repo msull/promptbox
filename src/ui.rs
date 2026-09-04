@@ -169,6 +169,34 @@ fn field(ui: &mut Ui, label: &str, help: &str, text: &mut String, id: &str) {
     .labelled_by(heading.id);
 }
 
+/// The bundled egui fonts lack most of the symbols the UI uses (status
+/// dots, level-meter bars, ⇧ and ⌫ in shortcut hints). Append a system font
+/// that has them as the last fallback; when none is found the glyphs render
+/// as boxes but everything still works.
+pub fn install_symbol_font(ctx: &egui::Context) {
+    const CANDIDATES: &[&str] = &[
+        "/System/Library/Fonts/Apple Symbols.ttf",
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+        "/usr/share/fonts/TTF/DejaVuSans.ttf",
+        "C:\\Windows\\Fonts\\seguisym.ttf",
+    ];
+    let Some(bytes) = CANDIDATES.iter().find_map(|p| std::fs::read(p).ok()) else {
+        log::warn!("no system symbol font found; some icons will show as boxes");
+        return;
+    };
+    let mut fonts = egui::FontDefinitions::default();
+    fonts.font_data.insert(
+        "symbols".to_owned(),
+        std::sync::Arc::new(egui::FontData::from_owned(bytes)),
+    );
+    for family in [egui::FontFamily::Proportional, egui::FontFamily::Monospace] {
+        if let Some(list) = fonts.families.get_mut(&family) {
+            list.push("symbols".to_owned());
+        }
+    }
+    ctx.set_fonts(fonts);
+}
+
 /// Instruction box under the prompt: whatever is typed here is sent to the
 /// model together with the whole prompt, and the reply replaces the prompt.
 fn ai_row(app: &mut PromptBoxApp, ui: &mut Ui) {
@@ -180,7 +208,7 @@ fn ai_row(app: &mut PromptBoxApp, ui: &mut Ui) {
         let busy = app.core().ai_busy();
         let available = app.ai_available();
         let hint = if available {
-            "Ask the AI to change the prompt… (↩ to send)"
+            "Ask the AI to change the prompt… (Enter to send)"
         } else {
             "Set an OpenAI key in Settings to use AI"
         };
@@ -509,7 +537,7 @@ fn top_bar(app: &mut PromptBoxApp, ui: &mut Ui) {
                 app.dispatch(AppAction::SelectProject(choice));
             }
             if ui
-                .selectable_label(app.project_editor.is_some(), "✎")
+                .selectable_label(app.project_editor.is_some(), "Edit")
                 .on_hover_text("Edit projects: vocabulary, corrections, glossary, AI context")
                 .clicked()
             {
@@ -530,7 +558,7 @@ fn top_bar(app: &mut PromptBoxApp, ui: &mut Ui) {
             }
             let mut pinned = app.always_on_top();
             if ui
-                .toggle_value(&mut pinned, "📌")
+                .toggle_value(&mut pinned, "Pin")
                 .on_hover_text("Pin: keep this window above others")
                 .changed()
             {
@@ -674,7 +702,7 @@ fn status_indicator(app: &mut PromptBoxApp, ui: &mut Ui) {
             true,
         ),
         SessionStatus::Error(why) => (
-            "✖",
+            "×",
             format!("Error: {why}"),
             ui.visuals().error_fg_color,
             true,
@@ -735,7 +763,7 @@ fn bottom_bar(app: &mut PromptBoxApp, ui: &mut Ui) {
         }
         if ui
             .add_enabled(!busy, egui::Button::new("Send →"))
-            .on_hover_text("Copy to clipboard and clear (⌘↩)")
+            .on_hover_text("Copy to clipboard and clear (⌘Return)")
             .clicked()
         {
             app.dispatch(AppAction::SendPrompt);

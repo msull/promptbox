@@ -129,7 +129,8 @@ pub struct PromptBoxApp {
 impl PromptBoxApp {
     /// Production wiring: system clipboard and the platform data directory.
     #[must_use]
-    pub fn new(_cc: &eframe::CreationContext<'_>) -> Self {
+    pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
+        crate::ui::install_symbol_font(&cc.egui_ctx);
         let mut app = Self::with_services(
             Box::new(SystemClipboard::default()),
             Box::new(FileStore::new(FileStore::default_dir())),

@@ -18,7 +18,7 @@ the feasibility spike and its measurements are in `spikes/voice-spike/`.
 4. Click **Start listening** or press ⌘L. macOS asks for microphone access the
    first time; the prompt is attributed to the terminal you launched from.
 5. Speak. Text appears dimmed while provisional and firms up at each pause.
-   ⌘↩ copies the prompt to the clipboard and clears the editor.
+   ⌘Return copies the prompt to the clipboard and clears the editor.
 
 ## Using it
 
@@ -55,12 +55,12 @@ switched off in Settings.
 | Keys | Action |
 |---|---|
 | ⌘L | Start / stop listening |
-| ⌘↩ | Send (copy and clear) |
+| ⌘Return | Send (copy and clear) |
 | ⌘⇧C | Copy without clearing |
 | ⌘Z / ⌘⇧Z | Undo / redo |
 | ⌘⌫ | Delete last sentence |
 | ⌘⇧⌫ | Delete last paragraph |
-| ⇧↩ | New paragraph |
+| ⇧Return | New paragraph |
 | ⌘⇧K | Clear (undoable) |
 
 Undo is one history covering typing, dictation, voice commands, AI rewrites,
@@ -70,7 +70,7 @@ cursor, which right after dictation is what you just said.
 ### Status line
 
 ○ Idle · ● Listening · ◐ Finishing (stop requested, last words still
-arriving) · ▲ Degraded · ✖ Error.
+arriving) · ▲ Degraded · × Error.
 
 Degraded means an audio gap was detected or the recognizer made no progress
 during four seconds of continuous voice; it stays until dismissed or until
@@ -80,7 +80,7 @@ problem, a moving meter with no text means recognition is.
 
 ### Window
 
-📌 pins the window above others. **Dock** shrinks it to 300×330 and moves
+**Pin** keeps the window above others. **Dock** shrinks it to 300×330 and moves
 it to the next screen corner on each click (top-right, bottom-right,
 bottom-left, top-left). Below about 460 px wide the top bar hides the
 project picker and Debug menu so the window can sit small in a corner.
@@ -124,7 +124,7 @@ Settings.
 ## Projects
 
 The **Project** picker in the top bar chooses the context for what you are
-dictating; ✎ next to it (or **Projects…** in Settings when the window is
+dictating; **Edit** next to it (or **Projects…** in Settings when the window is
 narrow) opens the editor. Each project has, one entry per line:
 
 - **Vocabulary**: names and jargon the recognizer is primed with.
@@ -149,7 +149,7 @@ never touches text while you are dictating.
   capitalization and removes filler words and false starts, keeping your
   wording and order.
 - The **AI box** under the prompt takes an instruction ("make it concise",
-  "turn this into a bulleted list"). Press ↩ or Ask; the instruction and the
+  "turn this into a bulleted list"). Press Enter or Ask; the instruction and the
   full prompt go to the model and the reply replaces the prompt.
 
 - **Zevro enhance** dictates an instruction instead of typing it. After

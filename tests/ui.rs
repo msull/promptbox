@@ -173,10 +173,10 @@ fn demo_with_gap_shows_sticky_degraded_state_until_dismissed() {
 fn pin_toggle_persists_always_on_top() {
     let mut harness = harness();
     assert!(!harness.state().always_on_top());
-    harness.get_by_label("📌").click();
+    harness.get_by_label("Pin").click();
     harness.run_steps(2);
     assert!(harness.state().always_on_top());
-    harness.get_by_label("📌").click();
+    harness.get_by_label("Pin").click();
     harness.run_steps(2);
     assert!(!harness.state().always_on_top());
 }
@@ -368,7 +368,7 @@ fn project_editor_saves_persists_and_corrects_dictation() {
     use promptbox::core::AppAction;
     use promptbox::ports::speech::{SpeechEvent, SpeechEventKind};
     let mut harness = harness();
-    harness.get_by_label("✎").click();
+    harness.get_by_label("Edit").click();
     harness.run_steps(4);
     harness.get_by_label("New").click();
     harness.run_steps(4);
@@ -540,4 +540,26 @@ fn draft_is_restored_on_startup() {
     let harness = harness_with(FakeClipboard::default(), store);
     assert_eq!(harness.state().core().doc().committed(), "unsent draft");
     harness.get_by_label("Restored unsaved draft");
+}
+
+#[test]
+fn every_symbol_in_the_ui_has_a_glyph_with_the_fallback_font() {
+    let ctx = egui::Context::default();
+    promptbox::ui::install_symbol_font(&ctx);
+    ctx.begin_pass(egui::RawInput::default());
+    let src = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/ui.rs")).unwrap();
+    // Only what the UI draws: the unit-test module holds emoji test data.
+    let src = src.split("#[cfg(test)]").next().unwrap();
+    let missing: String = src
+        .chars()
+        .filter(|c| !c.is_ascii() && !c.is_alphabetic() && *c != '\u{200d}')
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
+        .filter(|&c| !ctx.fonts_mut(|f| f.has_glyph(&egui::FontId::proportional(14.0), c)))
+        .collect();
+    let mut output = ctx.end_pass();
+    output.textures_delta.clear();
+    if std::path::Path::new("/System/Library/Fonts/Apple Symbols.ttf").exists() {
+        assert_eq!(missing, "", "glyphs with no font: {missing}");
+    }
 }
