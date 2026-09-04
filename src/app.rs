@@ -1,95 +1,153 @@
-//! Application state and rendering.
-//!
-//! Design rule: [`PromptBoxApp`] owns plain data and pure methods. The
-//! [`eframe::App::ui`] implementation only reads/writes that data and
-//! draws widgets. This keeps logic unit-testable without egui and lets UI
-//! tests (see `tests/ui.rs`) drive the real app through its widgets.
+//! Orchestration: owns [`AppCore`], the port adapters, and the fake speech
+//! source. Maps effects to adapter calls and feeds their results back as
+//! actions. Rendering lives in [`crate::ui`].
 
-/// Top-level application state.
-#[derive(Debug, Default)]
+use std::time::{Duration, Instant, SystemTime};
+
+use crate::adapters::clipboard::SystemClipboard;
+use crate::adapters::fake_speech::{DEMO_SCRIPT, FakeDictation};
+use crate::adapters::persistence::FileStore;
+use crate::core::action::RECENT_LIMIT;
+use crate::core::{AppAction, AppCore, Clock, Effect};
+use crate::ports::clipboard::Clipboard;
+use crate::ports::history::HistoryStore;
+
 pub struct PromptBoxApp {
-    name: String,
-    greet_count: u32,
+    core: AppCore,
+    clipboard: Box<dyn Clipboard>,
+    history: Box<dyn HistoryStore>,
+    started: Instant,
+    /// Added to the monotonic clock; tests use it to skip ahead.
+    time_offset: Duration,
+    demo: Option<FakeDictation>,
+    next_session: u64,
 }
 
 impl PromptBoxApp {
-    /// Creates the app. The creation context gives access to egui settings
-    /// (fonts, storage, etc.) when we need them later.
+    /// Production wiring: system clipboard and the platform data directory.
     #[must_use]
     pub fn new(_cc: &eframe::CreationContext<'_>) -> Self {
-        Self::default()
+        Self::with_services(
+            Box::new(SystemClipboard::default()),
+            Box::new(FileStore::new(FileStore::default_dir())),
+        )
     }
 
-    /// The greeting shown for the current name.
+    /// Wires explicit adapters (tests use fakes) and loads persisted state.
     #[must_use]
-    pub fn greeting(&self) -> String {
-        let name = self.name.trim();
-        if name.is_empty() {
-            "Hello, World!".to_owned()
-        } else {
-            format!("Hello, {name}!")
+    pub fn with_services(
+        clipboard: Box<dyn Clipboard>,
+        mut history: Box<dyn HistoryStore>,
+    ) -> Self {
+        let recent = history.load_recent(RECENT_LIMIT);
+        let draft = history.load_draft();
+        let mut app = Self {
+            core: AppCore::new(),
+            clipboard,
+            history,
+            started: Instant::now(),
+            time_offset: Duration::ZERO,
+            demo: None,
+            next_session: 1,
+        };
+        app.dispatch(AppAction::RecentLoaded(recent));
+        app.dispatch(AppAction::DraftLoaded(draft));
+        app
+    }
+
+    #[must_use]
+    pub fn core(&self) -> &AppCore {
+        &self.core
+    }
+
+    #[must_use]
+    pub fn is_demo_running(&self) -> bool {
+        self.demo.is_some()
+    }
+
+    /// Skips the app clock forward (tests only; the UI never calls this).
+    pub fn advance_time(&mut self, by: Duration) {
+        self.time_offset += by;
+    }
+
+    fn clock(&self) -> Clock {
+        Clock {
+            mono: self.started.elapsed() + self.time_offset,
+            wall: SystemTime::now(),
         }
     }
 
-    /// Records one press of the Greet button.
-    pub fn greet(&mut self) {
-        self.greet_count += 1;
+    /// The single entry point for every user, speech, or timer action.
+    pub fn dispatch(&mut self, action: AppAction) {
+        let now = self.clock();
+        let effects = self.core.dispatch(action, now);
+        for effect in effects {
+            let result = match effect {
+                Effect::WriteClipboard(text) => {
+                    AppAction::ClipboardWriteFinished(self.clipboard.write_text(&text))
+                }
+                Effect::SaveHistory(prompt) => AppAction::HistorySaveFinished {
+                    id: prompt.id,
+                    result: self.history.save_sent(&prompt),
+                },
+                Effect::SaveDraft(text) => {
+                    AppAction::DraftSaveFinished(self.history.save_draft(&text))
+                }
+            };
+            self.dispatch(result);
+        }
     }
 
-    /// How many times Greet has been pressed.
-    #[must_use]
-    pub fn greet_count(&self) -> u32 {
-        self.greet_count
+    /// Starts scripted dictation as a new session. `with_gap` injects an
+    /// audio gap so the degraded state can be seen.
+    pub fn start_demo(&mut self, with_gap: bool) {
+        self.stop_demo();
+        let session = self.next_session;
+        self.next_session += 1;
+        self.demo = Some(FakeDictation::new(
+            session,
+            DEMO_SCRIPT,
+            self.clock().mono,
+            with_gap,
+        ));
+        self.dispatch(AppAction::SessionStarted(session));
+    }
+
+    pub fn stop_demo(&mut self) {
+        if self.demo.take().is_some() {
+            self.dispatch(AppAction::SessionStopped);
+        }
+    }
+
+    /// Called once per frame: drains due speech events and ticks the clock.
+    /// Returns how soon a repaint is wanted, if anything is animating.
+    pub fn pump(&mut self) -> Option<Duration> {
+        let now = self.clock().mono;
+        if let Some(demo) = &mut self.demo {
+            let events = demo.poll(now);
+            let finished = demo.is_finished();
+            for ev in events {
+                self.dispatch(AppAction::SpeechEventReceived(ev));
+            }
+            if finished {
+                self.stop_demo();
+            }
+        }
+        self.dispatch(AppAction::Tick);
+        if self.demo.is_some() {
+            return Some(Duration::from_millis(50));
+        }
+        self.core
+            .toast()
+            .map(|t| t.expires_at.saturating_sub(self.clock().mono) + Duration::from_millis(10))
     }
 }
 
 impl eframe::App for PromptBoxApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
-        egui::CentralPanel::default().show(ui, |ui| {
-            ui.heading("Prompt Box");
-            ui.add_space(8.0);
-
-            ui.horizontal(|ui| {
-                let label = ui.label("Name");
-                ui.text_edit_singleline(&mut self.name)
-                    .labelled_by(label.id);
-            });
-
-            if ui.button("Greet").clicked() {
-                self.greet();
-            }
-
-            ui.add_space(8.0);
-            ui.label(self.greeting());
-            ui.label(format!("Greeted {} times", self.greet_count));
-        });
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn greeting_defaults_to_world() {
-        let app = PromptBoxApp::default();
-        assert_eq!(app.greeting(), "Hello, World!");
-    }
-
-    #[test]
-    fn greeting_uses_name() {
-        let app = PromptBoxApp {
-            name: "  Sully ".to_owned(),
-            ..Default::default()
-        };
-        assert_eq!(app.greeting(), "Hello, Sully!");
-    }
-
-    #[test]
-    fn greet_increments_count() {
-        let mut app = PromptBoxApp::default();
-        app.greet();
-        app.greet();
-        assert_eq!(app.greet_count(), 2);
+        if let Some(delay) = self.pump() {
+            ui.ctx().request_repaint_after(delay);
+        }
+        crate::ui::draw(self, ui);
     }
 }

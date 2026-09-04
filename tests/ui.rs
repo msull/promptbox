@@ -1,44 +1,136 @@
 //! UI tests. These run the real `eframe::App` headlessly via `egui_kittest`
-//! and interact with widgets through their accessible labels. No GPU needed.
+//! with fake clipboard/history adapters and interact through accessible
+//! labels. Core state transitions are covered in unit tests; these check the
+//! important flows are wired to widgets.
+
+use std::time::Duration;
 
 use egui::accesskit::Role;
 use egui_kittest::Harness;
 use egui_kittest::kittest::Queryable;
 use promptbox::PromptBoxApp;
+use promptbox::adapters::clipboard::FakeClipboard;
+use promptbox::adapters::persistence::MemoryStore;
+use promptbox::core::SessionStatus;
+
+fn harness_with(clipboard: FakeClipboard, store: MemoryStore) -> Harness<'static, PromptBoxApp> {
+    Harness::new_eframe(move |_cc| {
+        PromptBoxApp::with_services(Box::new(clipboard), Box::new(store))
+    })
+}
 
 fn harness() -> Harness<'static, PromptBoxApp> {
-    Harness::new_eframe(|cc| PromptBoxApp::new(cc))
+    harness_with(FakeClipboard::default(), MemoryStore::default())
 }
 
-#[test]
-fn shows_heading_and_default_greeting() {
-    let harness = harness();
-    harness.get_by_label("Prompt Box");
-    harness.get_by_label("Hello, World!");
-    harness.get_by_label("Greeted 0 times");
-}
-
-#[test]
-fn greet_button_increments_counter() {
-    let mut harness = harness();
-
-    harness.get_by_label("Greet").click();
-    harness.run();
-    harness.get_by_label("Greet").click();
-    harness.run();
-
-    harness.get_by_label("Greeted 2 times");
-    assert_eq!(harness.state().greet_count(), 2);
-}
-
-#[test]
-fn typing_a_name_updates_greeting() {
-    let mut harness = harness();
-
-    let input = harness.get_by_role_and_label(Role::TextInput, "Name");
+fn type_prompt(harness: &mut Harness<'static, PromptBoxApp>, text: &str) {
+    let input = harness.get_by_role_and_label(Role::MultilineTextInput, "Prompt");
     input.focus();
-    input.type_text("Ada");
-    harness.run();
+    input.type_text(text);
+    harness.run_steps(2);
+}
 
-    harness.get_by_label("Hello, Ada!");
+#[test]
+fn starts_idle_with_empty_prompt() {
+    let harness = harness();
+    harness.get_by_label("○ Idle");
+    assert_eq!(harness.state().core().status(), &SessionStatus::Idle);
+    assert!(harness.state().core().doc().is_empty());
+}
+
+#[test]
+fn typing_edits_the_document_through_the_core() {
+    let mut harness = harness();
+    type_prompt(&mut harness, "Add tests");
+    assert_eq!(harness.state().core().doc().committed(), "Add tests");
+    assert_eq!(harness.state().core().doc().history().len(), 1);
+}
+
+#[test]
+fn send_copies_clears_and_toasts() {
+    let mut harness = harness();
+    type_prompt(&mut harness, "ship it");
+    harness.get_by_label("Send →").click();
+    harness.run_steps(2);
+    harness.get_by_label("Prompt copied");
+    assert_eq!(harness.state().core().doc().committed(), "");
+    assert_eq!(harness.state().core().recent()[0].text, "ship it");
+}
+
+#[test]
+fn failed_clipboard_keeps_prompt_and_shows_error() {
+    let clipboard = FakeClipboard {
+        fail_with: Some("no clipboard".into()),
+        ..Default::default()
+    };
+    let mut harness = harness_with(clipboard, MemoryStore::default());
+    type_prompt(&mut harness, "keep me");
+    harness.get_by_label("Send →").click();
+    harness.run_steps(2);
+    harness.get_by_label("Send failed: no clipboard. Prompt kept.");
+    assert_eq!(harness.state().core().doc().committed(), "keep me");
+    assert!(harness.state().core().recent().is_empty());
+}
+
+#[test]
+fn copy_keeps_text() {
+    let mut harness = harness();
+    type_prompt(&mut harness, "twice");
+    harness.get_by_label("Copy").click();
+    harness.run_steps(2);
+    harness.get_by_label("Copied");
+    assert_eq!(harness.state().core().doc().committed(), "twice");
+}
+
+#[test]
+fn demo_dictation_shows_provisional_then_committed_text() {
+    let mut harness = harness();
+    harness.get_by_label("Demo dictation").click();
+    harness.run_steps(2);
+    harness.get_by_label("● Listening");
+
+    // First partials arrive after ~850 ms of demo time.
+    harness
+        .state_mut()
+        .advance_time(Duration::from_millis(1000));
+    harness.run_steps(2);
+    let doc = harness.state().core().doc();
+    assert!(doc.provisional().is_some(), "expected provisional text");
+    assert_eq!(doc.committed(), "");
+
+    // Far enough for every sentence to be finalized and the demo to stop.
+    harness.state_mut().advance_time(Duration::from_secs(120));
+    harness.run_steps(3);
+    let doc = harness.state().core().doc();
+    assert!(doc.provisional().is_none());
+    assert!(doc.committed().starts_with("Add a Pydantic model"));
+    assert!(doc.committed().ends_with("refactor anything."));
+    harness.get_by_label("○ Idle");
+}
+
+#[test]
+fn demo_with_gap_shows_sticky_degraded_state_until_dismissed() {
+    let mut harness = harness();
+    harness.get_by_label("Demo with gap").click();
+    harness.run_steps(2);
+    harness.state_mut().advance_time(Duration::from_secs(120));
+    harness.run_steps(3);
+    assert!(matches!(
+        harness.state().core().status(),
+        SessionStatus::Degraded(_)
+    ));
+    harness.get_by_label("Dismiss").click();
+    harness.run_steps(2);
+    harness.get_by_label("○ Idle");
+}
+
+#[test]
+fn draft_is_restored_on_startup() {
+    let store = MemoryStore {
+        draft: Some("unsent draft".into()),
+        ..Default::default()
+    };
+    let harness = harness_with(FakeClipboard::default(), store);
+    assert_eq!(harness.state().core().doc().committed(), "unsent draft");
+    harness.get_by_label("Restored unsaved draft");
 }
