@@ -239,10 +239,18 @@ cargo fmt --all                                      # format
 ```
 
 `scripts/bundle.sh` builds a release binary, wraps it as `Prompt Box.app` in
-`~/Applications` (pass another directory to override), and ad-hoc signs it
-so Spotlight and Launchpad find it and the microphone / Accessibility
-grants stick to the app. A bundled app starts with `/` as its working
-directory, so it reads the API key from Settings rather than a `.env`.
+`~/Applications` (pass another directory to override), and signs it so
+Spotlight and Launchpad find it. A bundled app starts with `/` as its
+working directory, so it reads the API key from Settings rather than a
+`.env`.
+
+macOS ties the Accessibility grant (needed by Send) to the app's code
+signature. Ad-hoc signing, the default, gives every build a new identity,
+so the script resets the grant on install and the app asks again on the
+next launch. To keep the grant across rebuilds, create a self-signed
+certificate once: Keychain Access → Certificate Assistant → Create a
+Certificate, name `Prompt Box Dev`, type *Code Signing*. The script uses
+it automatically (or set `CODESIGN_IDENTITY` to another name).
 The icon is `assets/PromptBox.svg`; `scripts/icon.sh` rebuilds the `.icns`.
 
 Dev aids: `PROMPTBOX_AUTOSTART=1` starts listening at launch;
