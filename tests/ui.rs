@@ -10,8 +10,10 @@ use egui_kittest::Harness;
 use egui_kittest::kittest::Queryable;
 use promptbox::PromptBoxApp;
 use promptbox::adapters::clipboard::FakeClipboard;
+use promptbox::adapters::openai::FakeRewriter;
 use promptbox::adapters::persistence::MemoryStore;
 use promptbox::core::SessionStatus;
+use std::sync::Arc;
 
 fn harness_with(clipboard: FakeClipboard, store: MemoryStore) -> Harness<'static, PromptBoxApp> {
     Harness::new_eframe(move |_cc| {
@@ -244,6 +246,70 @@ fn commands_button_opens_the_voice_command_list() {
     harness.get_by_label("Commands").click();
     harness.run_steps(2);
     assert!(!harness.state().show_commands);
+}
+
+fn wait_for_ai(harness: &mut Harness<'static, PromptBoxApp>) {
+    for _ in 0..50 {
+        harness.run_steps(2);
+        if !harness.state().core().ai_busy() {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    panic!("AI rewrite did not finish");
+}
+
+#[test]
+fn clean_up_button_replaces_prompt_with_ai_reply_and_is_undoable() {
+    let mut harness = harness();
+    harness.state_mut().set_rewriter(Arc::new(FakeRewriter {
+        reply: Ok("Add a Pydantic model.".into()),
+    }));
+    type_prompt(&mut harness, "um add a a pydantic model");
+    harness.get_by_label("Clean up").click();
+    wait_for_ai(&mut harness);
+    assert_eq!(
+        harness.state().core().doc().committed(),
+        "Add a Pydantic model."
+    );
+    harness.get_by_label("Rewritten. Undo restores the original.");
+    harness.get_by_label("Undo").click();
+    harness.run_steps(2);
+    assert_eq!(
+        harness.state().core().doc().committed(),
+        "um add a a pydantic model"
+    );
+}
+
+#[test]
+fn ai_instruction_box_sends_and_failure_keeps_prompt() {
+    use egui::Key;
+    let mut harness = harness();
+    harness.state_mut().set_rewriter(Arc::new(FakeRewriter {
+        reply: Err("quota exceeded".into()),
+    }));
+    type_prompt(&mut harness, "keep me");
+    let input = harness.get_by_role_and_label(Role::TextInput, "AI");
+    input.focus();
+    input.type_text("make it formal");
+    harness.run_steps(2);
+    harness.key_press(Key::Enter);
+    wait_for_ai(&mut harness);
+    assert_eq!(harness.state().core().doc().committed(), "keep me");
+    harness.get_by_label("AI rewrite failed: quota exceeded");
+    assert_eq!(harness.state().ai_instruction, "");
+}
+
+#[test]
+fn settings_window_saves_api_key_and_enables_ai() {
+    let mut harness = harness();
+    harness.get_by_label("⚙").click();
+    harness.run_steps(2);
+    harness.state_mut().settings_draft.openai_api_key = "sk-test".into();
+    harness.get_by_label("Save").click();
+    harness.run_steps(2);
+    assert!(harness.state().ai_available());
+    assert_eq!(harness.state().api_key_source(), "settings");
 }
 
 #[test]

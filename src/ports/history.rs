@@ -23,6 +23,12 @@ pub struct Settings {
     /// Voice-command trigger word; empty means the built-in default.
     #[serde(default)]
     pub trigger: String,
+    /// `OpenAI` API key entered in the UI; empty means use the environment.
+    #[serde(default)]
+    pub openai_api_key: String,
+    /// `OpenAI` model for rewrites; empty means the built-in default.
+    #[serde(default)]
+    pub openai_model: String,
 }
 
 pub trait HistoryStore {

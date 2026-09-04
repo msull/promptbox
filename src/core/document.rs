@@ -40,6 +40,8 @@ pub enum EditSource {
         utterance: UtteranceId,
     },
     Manual,
+    /// Whole-prompt replacement produced by an AI rewrite.
+    Ai,
 }
 
 /// One entry of the single authoritative edit history, in committed coordinates.
@@ -175,10 +177,23 @@ impl Document {
 
     /// Replaces the whole document with `text` as one manual history entry.
     pub fn replace_all(&mut self, text: &str) {
+        self.replace_all_from(text, EditSource::Manual);
+    }
+
+    /// Replaces the whole document as one undoable entry with `source`.
+    pub fn replace_all_from(&mut self, text: &str, source: EditSource) {
         self.provisional = None;
-        let len = self.committed.len();
-        self.apply_manual_edit(0..len, text, OverlapPolicy::CancelProvisional)
-            .expect("whole-document range is always valid");
+        let old = std::mem::take(&mut self.committed);
+        self.redo.clear();
+        self.history.push(RangeReplace {
+            range: 0..old.len(),
+            old,
+            new: text.to_owned(),
+            source,
+            provisional_text: None,
+        });
+        text.clone_into(&mut self.committed);
+        self.cursor = self.committed.len();
     }
 
     pub fn set_active_session(&mut self, session: SessionId) {

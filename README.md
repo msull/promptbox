@@ -5,12 +5,34 @@ with [egui](https://docs.rs/egui) / [eframe](https://docs.rs/eframe). Design:
 `voice-prompt-workbench-design.md`. Milestone 0 spike and its findings:
 `spikes/voice-spike/`.
 
-Current state (Milestone 4, voice commands): microphone capture through a
+Current state (Milestone 4 plus first AI features): microphone capture through a
 lock-free ring buffer, whisper.cpp (Metal on macOS) with emulated streaming
 partials, dimmed provisional text in the editor, an input level meter,
 stall and audio-gap warnings, Copy and Send through a clipboard port that
 reports failure, sent-prompt history, autosaved draft, undo/redo, delete
 sentence/paragraph, paragraph breaks, voice commands, and toasts.
+
+## AI rewrite
+
+Two explicit, user-requested transformations of the whole prompt; the AI
+never touches text while you are dictating.
+
+- **Clean up** (bottom bar): fixes recognition errors, punctuation, and
+  capitalization and removes filler words and false starts, keeping your
+  wording and order.
+- **AI box** under the prompt: type an instruction ("make it concise",
+  "turn this into a bulleted list"), press ↩ or Ask. The instruction and
+  the full prompt go to the model and the reply replaces the prompt.
+
+Both are one undoable edit (⌘Z restores the original). Requests run on a
+worker thread; the bottom bar shows a spinner while one is in flight, and
+a failure leaves the prompt untouched with an error toast.
+
+The model is `gpt-5.6-luna` via OpenAI chat completions. The key comes
+from, in order: the key saved in **⚙ Settings**, the `OPENAI_API_KEY`
+environment variable, or a `.env` file in the working directory. Settings
+also lets you change the model and the voice trigger word, and shows the
+prompt/completion tokens spent this session (also logged per call).
 
 ## Voice commands
 

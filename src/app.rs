@@ -10,10 +10,12 @@ use crate::adapters::audio::MicCapture;
 use crate::adapters::clipboard::SystemClipboard;
 use crate::adapters::fake_speech::{DEMO_SCRIPT, FakeDictation};
 use crate::adapters::model::{self, DEFAULT_MODEL, Download};
+use crate::adapters::openai::{self, OpenAiRewriter};
 use crate::adapters::persistence::FileStore;
 use crate::adapters::speech::WhisperEngine;
 use crate::core::action::RECENT_LIMIT;
 use crate::core::{AppAction, AppCore, Clock, Effect};
+use crate::ports::ai::{RewriteResponse, Rewriter};
 use crate::ports::clipboard::Clipboard;
 use crate::ports::engine::{AudioChunk, EngineConfig, PushError, SpeechEngine};
 use crate::ports::history::{HistoryStore, Settings};
@@ -106,6 +108,14 @@ pub struct PromptBoxApp {
     docked_corner: Option<Corner>,
     /// Whether the voice-command help popup is open.
     pub show_commands: bool,
+    /// Whether the settings window is open.
+    pub show_settings: bool,
+    /// Text in the AI instruction box under the prompt.
+    pub ai_instruction: String,
+    /// Draft values in the settings window until saved.
+    pub settings_draft: Settings,
+    rewriter: Option<std::sync::Arc<dyn Rewriter>>,
+    ai_rx: Option<Receiver<(u64, Result<RewriteResponse, String>)>>,
 }
 
 impl PromptBoxApp {
@@ -150,7 +160,14 @@ impl PromptBoxApp {
             window_level_applied: false,
             docked_corner: None,
             show_commands: false,
+            show_settings: false,
+            ai_instruction: String::new(),
+            settings_draft: Settings::default(),
+            rewriter: None,
+            ai_rx: None,
         };
+        app.settings_draft = app.settings.clone();
+        app.rebuild_rewriter();
         app.core.set_trigger(&app.settings.trigger);
         app.dispatch(AppAction::RecentLoaded(recent));
         app.dispatch(AppAction::DraftLoaded(draft));
@@ -195,6 +212,64 @@ impl PromptBoxApp {
     #[must_use]
     pub fn always_on_top(&self) -> bool {
         self.settings.always_on_top
+    }
+
+    /// Installs a rewriter directly (tests use a fake).
+    pub fn set_rewriter(&mut self, rewriter: std::sync::Arc<dyn Rewriter>) {
+        self.rewriter = Some(rewriter);
+    }
+
+    /// Where the `OpenAI` key comes from, for the settings window.
+    #[must_use]
+    pub fn api_key_source(&self) -> &'static str {
+        if !self.settings.openai_api_key.trim().is_empty() {
+            "settings"
+        } else if std::env::var_os("OPENAI_API_KEY").is_some() {
+            "OPENAI_API_KEY environment variable"
+        } else if openai::read_dotenv_key(std::path::Path::new(".env"), "OPENAI_API_KEY").is_some()
+        {
+            ".env file in the working directory"
+        } else {
+            "none"
+        }
+    }
+
+    #[must_use]
+    pub fn ai_available(&self) -> bool {
+        self.rewriter.is_some()
+    }
+
+    fn resolve_api_key(&self) -> Option<String> {
+        let from_settings = self.settings.openai_api_key.trim();
+        if !from_settings.is_empty() {
+            return Some(from_settings.to_owned());
+        }
+        std::env::var("OPENAI_API_KEY")
+            .ok()
+            .filter(|k| !k.trim().is_empty())
+            .or_else(|| openai::read_dotenv_key(std::path::Path::new(".env"), "OPENAI_API_KEY"))
+    }
+
+    fn rebuild_rewriter(&mut self) {
+        let model = if self.settings.openai_model.trim().is_empty() {
+            openai::DEFAULT_MODEL.to_owned()
+        } else {
+            self.settings.openai_model.trim().to_owned()
+        };
+        self.rewriter = self.resolve_api_key().map(|key| {
+            std::sync::Arc::new(OpenAiRewriter::new(key, model)) as std::sync::Arc<dyn Rewriter>
+        });
+    }
+
+    /// Saves the settings-window draft and reapplies anything it affects.
+    pub fn save_settings_draft(&mut self) {
+        self.settings = self.settings_draft.clone();
+        self.core.set_trigger(&self.settings.trigger);
+        self.rebuild_rewriter();
+        match self.history.save_settings(&self.settings) {
+            Ok(()) => log::info!("settings saved"),
+            Err(e) => log::warn!("could not save settings: {e}"),
+        }
     }
 
     /// Pins or unpins the window above others and remembers the choice.
@@ -280,6 +355,35 @@ impl PromptBoxApp {
                 }
                 Effect::StopListening => {
                     self.stop_listening();
+                    continue;
+                }
+                Effect::AiRewrite(request) => {
+                    let Some(rewriter) = self.rewriter.clone() else {
+                        self.dispatch(AppAction::AiRewriteFinished {
+                            id: request.id,
+                            result: Err("no OpenAI API key; set one in Settings".into()),
+                        });
+                        continue;
+                    };
+                    let (tx, rx) = channel();
+                    self.ai_rx = Some(rx);
+                    std::thread::Builder::new()
+                        .name("ai-rewrite".into())
+                        .spawn(move || {
+                            let t = Instant::now();
+                            let result = rewriter.rewrite(&request);
+                            match &result {
+                                Ok(r) => log::info!(
+                                    "ai rewrite: {} prompt + {} completion tokens in {:.1} s",
+                                    r.prompt_tokens,
+                                    r.completion_tokens,
+                                    t.elapsed().as_secs_f64()
+                                ),
+                                Err(e) => log::warn!("ai rewrite failed: {e}"),
+                            }
+                            let _ = tx.send((request.id, result));
+                        })
+                        .expect("spawn ai thread");
                     continue;
                 }
             };
@@ -432,6 +536,7 @@ impl PromptBoxApp {
     /// events, ticks the clock. Returns how soon a repaint is wanted.
     pub fn pump(&mut self) -> Option<Duration> {
         self.pump_recognizer_load();
+        self.pump_ai();
         self.pump_download();
         self.pump_live();
         self.pump_demo();
@@ -439,12 +544,20 @@ impl PromptBoxApp {
         if self.is_live() || self.demo.is_some() || self.download.is_some() {
             return Some(Duration::from_millis(20));
         }
-        if matches!(self.recognizer, Recognizer::Loading(_)) {
+        if matches!(self.recognizer, Recognizer::Loading(_)) || self.ai_rx.is_some() {
             return Some(Duration::from_millis(100));
         }
         self.core
             .toast()
             .map(|t| t.expires_at.saturating_sub(self.clock().mono) + Duration::from_millis(10))
+    }
+
+    fn pump_ai(&mut self) {
+        let Some(rx) = &self.ai_rx else { return };
+        if let Ok((id, result)) = rx.try_recv() {
+            self.ai_rx = None;
+            self.dispatch(AppAction::AiRewriteFinished { id, result });
+        }
     }
 
     fn pump_recognizer_load(&mut self) {

@@ -5,5 +5,6 @@ pub mod audio;
 pub mod clipboard;
 pub mod fake_speech;
 pub mod model;
+pub mod openai;
 pub mod persistence;
 pub mod speech;

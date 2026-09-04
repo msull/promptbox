@@ -28,8 +28,107 @@ pub fn draw(app: &mut PromptBoxApp, ui: &mut Ui) {
     handle_shortcuts(app, ui);
     egui::Panel::top("top").show(ui, |ui| top_bar(app, ui));
     egui::Panel::bottom("bottom").show(ui, |ui| bottom_bar(app, ui));
+    egui::Panel::bottom("ai-row").show(ui, |ui| ai_row(app, ui));
     egui::CentralPanel::default().show(ui, |ui| editor(app, ui));
     commands_popup(app, ui);
+    settings_window(app, ui);
+}
+
+/// Instruction box under the prompt: whatever is typed here is sent to the
+/// model together with the whole prompt, and the reply replaces the prompt.
+fn ai_row(app: &mut PromptBoxApp, ui: &mut Ui) {
+    ui.horizontal(|ui| {
+        let busy = app.core().ai_busy();
+        let available = app.ai_available();
+        let hint = if available {
+            "Ask the AI to change the prompt… (↩ to send)"
+        } else {
+            "Set an OpenAI key in Settings to use AI"
+        };
+        let label = ui.label(RichText::new("AI").small().weak());
+        let width = ui.available_width() - 60.0;
+        let response = ui
+            .add_enabled(
+                !busy && available,
+                TextEdit::singleline(&mut app.ai_instruction)
+                    .id(egui::Id::new("ai-instruction"))
+                    .hint_text(hint)
+                    .desired_width(width),
+            )
+            .labelled_by(label.id);
+        let submitted = response.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter)) && !busy;
+        let clicked = ui
+            .add_enabled(!busy && available, egui::Button::new("Ask"))
+            .clicked();
+        if (submitted || clicked) && !app.ai_instruction.trim().is_empty() {
+            let instruction = std::mem::take(&mut app.ai_instruction);
+            app.dispatch(AppAction::AiRewrite { instruction });
+        }
+    });
+}
+
+fn settings_window(app: &mut PromptBoxApp, ui: &mut Ui) {
+    if !app.show_settings {
+        return;
+    }
+    let mut open = true;
+    let mut save = false;
+    egui::Window::new("Settings")
+        .open(&mut open)
+        .collapsible(false)
+        .resizable(false)
+        .default_width(380.0)
+        .show(ui.ctx(), |ui| {
+            egui::Grid::new("settings-grid")
+                .num_columns(2)
+                .spacing([12.0, 8.0])
+                .show(ui, |ui| {
+                    ui.label("OpenAI API key");
+                    ui.add(
+                        TextEdit::singleline(&mut app.settings_draft.openai_api_key)
+                            .password(true)
+                            .hint_text("sk-…")
+                            .desired_width(240.0),
+                    );
+                    ui.end_row();
+                    ui.label("Model");
+                    ui.add(
+                        TextEdit::singleline(&mut app.settings_draft.openai_model)
+                            .hint_text(crate::adapters::openai::DEFAULT_MODEL)
+                            .desired_width(240.0),
+                    );
+                    ui.end_row();
+                    ui.label("Trigger word");
+                    ui.add(
+                        TextEdit::singleline(&mut app.settings_draft.trigger)
+                            .hint_text(crate::core::commands::DEFAULT_TRIGGER)
+                            .desired_width(240.0),
+                    );
+                    ui.end_row();
+                });
+            ui.add_space(6.0);
+            ui.label(
+                RichText::new(format!("Key in use: {}", app.api_key_source()))
+                    .weak()
+                    .small(),
+            );
+            let (p, c) = app.core().ai_tokens();
+            ui.label(
+                RichText::new(format!(
+                    "AI tokens this session: {p} prompt, {c} completion"
+                ))
+                .weak()
+                .small(),
+            );
+            ui.add_space(6.0);
+            if ui.button("Save").clicked() {
+                save = true;
+            }
+        });
+    if save {
+        app.save_settings_draft();
+    }
+    app.show_settings = open;
 }
 
 /// Floating list of voice commands, built from the parser's grammar.
@@ -150,6 +249,13 @@ fn top_bar(app: &mut PromptBoxApp, ui: &mut Ui) {
             }
         }
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            if ui
+                .selectable_label(app.show_settings, "⚙")
+                .on_hover_text("Settings: OpenAI key, model, trigger word")
+                .clicked()
+            {
+                app.show_settings = !app.show_settings;
+            }
             let mut pinned = app.always_on_top();
             if ui
                 .toggle_value(&mut pinned, "📌")
@@ -333,6 +439,21 @@ fn bottom_bar(app: &mut PromptBoxApp, ui: &mut Ui) {
             app.dispatch(AppAction::ClearPrompt);
         }
         let busy = app.core().is_busy();
+        let ai_busy = app.core().ai_busy();
+        if ui
+            .add_enabled(
+                !ai_busy && app.ai_available(),
+                egui::Button::new("Clean up"),
+            )
+            .on_hover_text("AI: fix recognition errors and punctuation, remove filler (undoable)")
+            .clicked()
+        {
+            app.dispatch(AppAction::AiCleanUp);
+        }
+        if ai_busy {
+            ui.spinner();
+            ui.label(RichText::new("AI is rewriting…").weak());
+        }
         if ui
             .add_enabled(!busy, egui::Button::new("Copy"))
             .on_hover_text("Copy without clearing (⌘⇧C)")

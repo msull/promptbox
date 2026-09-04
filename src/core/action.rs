@@ -9,9 +9,10 @@ use std::ops::Range;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use crate::core::commands::{self, Command, DEFAULT_TRIGGER};
-use crate::core::document::{Document, OverlapPolicy};
+use crate::core::document::{Document, EditSource, OverlapPolicy};
 use crate::core::project::{Project, placeholder_projects};
 use crate::core::text::{last_paragraph_range, last_sentence_range, paragraph_break_for};
+use crate::ports::ai::{CLEAN_UP_INSTRUCTION, RewriteRequest, RewriteResponse};
 use crate::ports::history::SentPrompt;
 use crate::ports::speech::{SessionId, SpeechEvent, SpeechEventKind};
 
@@ -99,6 +100,16 @@ pub enum AppAction {
     /// Starts a new paragraph at the cursor (one blank line).
     NewParagraph,
     SelectProject(usize),
+    /// Ask the AI to transform the whole prompt with this instruction.
+    AiRewrite {
+        instruction: String,
+    },
+    /// One-click clean-up of the dictated text.
+    AiCleanUp,
+    AiRewriteFinished {
+        id: u64,
+        result: Result<RewriteResponse, String>,
+    },
     Tick,
 }
 
@@ -109,6 +120,8 @@ pub enum Effect {
     SaveDraft(String),
     /// A voice command asked to stop the microphone.
     StopListening,
+    /// Run this rewrite on a worker and report back with `AiRewriteFinished`.
+    AiRewrite(RewriteRequest),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -143,6 +156,9 @@ pub struct AppCore {
     last_progress: Option<Duration>,
     stall_flagged: bool,
     trigger: String,
+    ai_pending: Option<u64>,
+    ai_prompt_tokens: u64,
+    ai_completion_tokens: u64,
 }
 
 impl Default for AppCore {
@@ -171,6 +187,9 @@ impl AppCore {
             last_progress: None,
             stall_flagged: false,
             trigger: DEFAULT_TRIGGER.to_owned(),
+            ai_pending: None,
+            ai_prompt_tokens: 0,
+            ai_completion_tokens: 0,
         }
     }
 
@@ -215,6 +234,18 @@ impl AppCore {
     #[must_use]
     pub fn is_listening(&self) -> bool {
         self.active_session.is_some()
+    }
+
+    /// True while an AI rewrite is in flight.
+    #[must_use]
+    pub fn ai_busy(&self) -> bool {
+        self.ai_pending.is_some()
+    }
+
+    /// Tokens spent on AI rewrites this session: (prompt, completion).
+    #[must_use]
+    pub fn ai_tokens(&self) -> (u64, u64) {
+        (self.ai_prompt_tokens, self.ai_completion_tokens)
     }
 
     /// The word that opens the voice-command channel.
@@ -388,6 +419,35 @@ impl AppCore {
                 }
             }
             AppAction::DraftSaveFinished(Ok(())) | AppAction::DraftLoaded(Ok(None)) => {}
+            AppAction::AiCleanUp => {
+                self.begin_rewrite(CLEAN_UP_INSTRUCTION.to_owned(), now, &mut effects);
+            }
+            AppAction::AiRewrite { instruction } => {
+                self.begin_rewrite(instruction, now, &mut effects);
+            }
+            AppAction::AiRewriteFinished { id, result } => {
+                if self.ai_pending == Some(id) {
+                    self.ai_pending = None;
+                    match result {
+                        Ok(r) => {
+                            self.ai_prompt_tokens += r.prompt_tokens;
+                            self.ai_completion_tokens += r.completion_tokens;
+                            self.doc.replace_all_from(&r.text, EditSource::Ai);
+                            self.mark_dirty(now.mono);
+                            self.show_toast(
+                                "Rewritten. Undo restores the original.".to_owned(),
+                                false,
+                                now.mono,
+                            );
+                        }
+                        Err(e) => {
+                            self.show_toast(format!("AI rewrite failed: {e}"), true, now.mono);
+                        }
+                    }
+                } else {
+                    log::debug!("ignoring stale AI result {id}");
+                }
+            }
             AppAction::Tick => self.check_stall(now.mono),
         }
         self.maybe_autosave(now.mono, &mut effects);
@@ -505,6 +565,34 @@ impl AppCore {
         {
             self.show_toast(format!("Voice: {}", cmd.label()), false, clock.mono);
         }
+    }
+
+    fn begin_rewrite(&mut self, instruction: String, now: Clock, effects: &mut Vec<Effect>) {
+        if self.ai_pending.is_some() {
+            self.show_toast("AI is still working…".to_owned(), false, now.mono);
+            return;
+        }
+        if instruction.trim().is_empty() {
+            self.show_toast(
+                "Type what the AI should do first".to_owned(),
+                false,
+                now.mono,
+            );
+            return;
+        }
+        self.doc.commit_provisional();
+        let content = self.doc.committed().to_owned();
+        if content.trim().is_empty() {
+            self.show_toast("Nothing to rewrite".to_owned(), false, now.mono);
+            return;
+        }
+        let id = self.fresh_send_id(now.wall);
+        self.ai_pending = Some(id);
+        effects.push(Effect::AiRewrite(RewriteRequest {
+            id,
+            instruction,
+            content,
+        }));
     }
 
     /// Commits any live span, then removes the unit `range_of` picks out
@@ -1251,6 +1339,76 @@ mod tests {
         );
         assert!(core.toast().unwrap().is_error);
         assert!(toast_text(&core).contains("frobnicate the thing"));
+    }
+
+    fn finished(id: u64, text: &str) -> AppAction {
+        AppAction::AiRewriteFinished {
+            id,
+            result: Ok(RewriteResponse {
+                text: text.into(),
+                prompt_tokens: 100,
+                completion_tokens: 40,
+            }),
+        }
+    }
+
+    #[test]
+    fn ai_rewrite_replaces_the_prompt_as_one_undoable_edit() {
+        let mut core = AppCore::new();
+        typed(&mut core, "um so like add a a pydantic model", 0);
+        let effects = core.dispatch(AppAction::AiCleanUp, Clock::at(1));
+        let Effect::AiRewrite(req) = &effects[0] else {
+            panic!("{effects:?}")
+        };
+        assert_eq!(req.content, "um so like add a a pydantic model");
+        assert_eq!(req.instruction, CLEAN_UP_INSTRUCTION);
+        assert!(core.ai_busy());
+        // A second request while busy is refused.
+        assert!(core.dispatch(AppAction::AiCleanUp, Clock::at(2)).is_empty());
+        core.dispatch(finished(req.id, "Add a Pydantic model."), Clock::at(3));
+        assert!(!core.ai_busy());
+        assert_eq!(core.doc().committed(), "Add a Pydantic model.");
+        assert_eq!(core.ai_tokens(), (100, 40));
+        core.dispatch(AppAction::Undo, Clock::at(4));
+        assert_eq!(core.doc().committed(), "um so like add a a pydantic model");
+        core.dispatch(AppAction::Redo, Clock::at(5));
+        assert_eq!(core.doc().committed(), "Add a Pydantic model.");
+    }
+
+    #[test]
+    fn stale_or_failed_ai_results_leave_the_prompt_alone() {
+        let mut core = AppCore::new();
+        typed(&mut core, "text", 0);
+        core.dispatch(finished(999, "stale"), Clock::at(1));
+        assert_eq!(core.doc().committed(), "text");
+        let effects = core.dispatch(
+            AppAction::AiRewrite {
+                instruction: "make it formal".into(),
+            },
+            Clock::at(2),
+        );
+        let Effect::AiRewrite(req) = &effects[0] else {
+            panic!()
+        };
+        core.dispatch(
+            AppAction::AiRewriteFinished {
+                id: req.id,
+                result: Err("quota".into()),
+            },
+            Clock::at(3),
+        );
+        assert!(!core.ai_busy());
+        assert_eq!(core.doc().committed(), "text");
+        assert!(core.toast().unwrap().is_error);
+        assert!(
+            core.dispatch(
+                AppAction::AiRewrite {
+                    instruction: "  ".into()
+                },
+                Clock::at(4)
+            )
+            .is_empty()
+        );
     }
 
     #[test]
