@@ -3,7 +3,7 @@
 
 use std::ops::Range;
 
-use egui::text::{LayoutJob, TextFormat};
+use egui::text::{CCursor, CCursorRange, LayoutJob, TextFormat};
 use egui::{Key, KeyboardShortcut, Modifiers, RichText, TextEdit, TextStyle, Ui};
 use unicode_segmentation::UnicodeSegmentation;
 
@@ -249,6 +249,24 @@ fn editor(app: &mut PromptBoxApp, ui: &mut Ui) {
     let provisional = app.core().doc().provisional_range();
     let mut text = rendered.clone();
 
+    // The document owns the cursor. When it moved for a non-typing reason
+    // (a dictated sentence committed, undo, draft restore), push it into
+    // egui's text state; otherwise egui's stale click position would be
+    // read back below and every later utterance would anchor there.
+    let editor_id = egui::Id::new("prompt-editor");
+    let synced_key = egui::Id::new("prompt-editor-synced-cursor");
+    let doc_cursor = app.core().doc().cursor();
+    let last_synced: Option<usize> = ui.data(|d| d.get_temp(synced_key));
+    if last_synced != Some(doc_cursor) {
+        let mut state = TextEdit::load_state(ui.ctx(), editor_id).unwrap_or_default();
+        let ci = char_index(&rendered, doc_cursor);
+        state
+            .cursor
+            .set_char_range(Some(CCursorRange::one(CCursor::new(ci))));
+        TextEdit::store_state(ui.ctx(), editor_id, state);
+        ui.data_mut(|d| d.insert_temp(synced_key, doc_cursor));
+    }
+
     let normal = ui.visuals().text_color();
     let dim = ui.visuals().weak_text_color();
     let font = TextStyle::Body.resolve(ui.style());
@@ -275,7 +293,7 @@ fn editor(app: &mut PromptBoxApp, ui: &mut Ui) {
     };
 
     let output = TextEdit::multiline(&mut text)
-        .id_salt("prompt")
+        .id(editor_id)
         .hint_text("Speak or type your prompt…")
         .desired_width(f32::INFINITY)
         .desired_rows(12)
@@ -293,10 +311,16 @@ fn editor(app: &mut PromptBoxApp, ui: &mut Ui) {
         && let Some(cursor) = output.cursor_range.and_then(|r| r.single())
     {
         let byte = byte_offset(&text, cursor.index.0);
-        if byte != app.core().doc().cursor() {
+        if byte != doc_cursor {
             app.dispatch(AppAction::CursorMoved(byte));
+            ui.data_mut(|d| d.insert_temp(synced_key, byte));
         }
     }
+}
+
+/// Number of chars before byte offset `byte` (clamped to the end).
+fn char_index(s: &str, byte: usize) -> usize {
+    s[..byte.min(s.len())].chars().count()
 }
 
 /// Byte offset of the `char_index`-th char (clamped to the end).
@@ -392,5 +416,7 @@ mod tests {
     fn byte_offset_handles_multibyte() {
         assert_eq!(byte_offset("héllo", 2), 3);
         assert_eq!(byte_offset("hi", 10), 2);
+        assert_eq!(char_index("héllo", 3), 2);
+        assert_eq!(char_index("hi", 10), 2);
     }
 }

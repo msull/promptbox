@@ -111,6 +111,43 @@ fn demo_dictation_shows_provisional_then_committed_text() {
 }
 
 #[test]
+fn typing_after_dictation_continues_after_the_dictated_text() {
+    // Regression: egui's cursor stayed at the pre-dictation position, so
+    // later input (typed or dictated) landed before the previous sentence.
+    let mut harness = harness();
+    type_prompt(&mut harness, "Intro.");
+    harness.get_by_label("Debug").click();
+    harness.run_steps(2);
+    harness.get_by_label("Demo dictation").click();
+    harness.run_steps(2);
+    harness.state_mut().advance_time(Duration::from_secs(120));
+    harness.run_steps(3);
+    let committed = harness.state().core().doc().committed().to_owned();
+    assert!(
+        committed.starts_with("Intro. Add a Pydantic"),
+        "{committed}"
+    );
+
+    let input = harness.get_by_role_and_label(Role::MultilineTextInput, "Prompt");
+    input.focus();
+    input.type_text(" Tail.");
+    harness.run_steps(2);
+    let after = harness.state().core().doc().committed().to_owned();
+    assert_eq!(after, format!("{committed} Tail."));
+
+    // A second dictation also lands at the end, not at the old spot.
+    harness.get_by_label("Debug").click();
+    harness.run_steps(2);
+    harness.get_by_label("Demo dictation").click();
+    harness.run_steps(2);
+    harness.state_mut().advance_time(Duration::from_secs(120));
+    harness.run_steps(3);
+    let final_text = harness.state().core().doc().committed().to_owned();
+    assert!(final_text.starts_with(&after), "{final_text}");
+    assert!(final_text.ends_with("refactor anything."));
+}
+
+#[test]
 fn demo_with_gap_shows_sticky_degraded_state_until_dismissed() {
     let mut harness = harness();
     harness.get_by_label("Debug").click();
