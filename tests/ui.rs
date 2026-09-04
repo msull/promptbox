@@ -264,9 +264,11 @@ fn wait_for_ai(harness: &mut Harness<'static, PromptBoxApp>) {
 #[test]
 fn clean_up_button_replaces_prompt_with_ai_reply_and_is_undoable() {
     let mut harness = harness();
-    harness.state_mut().set_rewriter(Arc::new(FakeRewriter {
-        reply: Ok("Add a Pydantic model.".into()),
-    }));
+    harness
+        .state_mut()
+        .set_rewriter(Arc::new(FakeRewriter::replying(Ok(
+            "Add a Pydantic model.".into(),
+        ))));
     type_prompt(&mut harness, "um add a a pydantic model");
     harness.get_by_label("Clean up").click();
     wait_for_ai(&mut harness);
@@ -287,9 +289,11 @@ fn clean_up_button_replaces_prompt_with_ai_reply_and_is_undoable() {
 fn ai_instruction_box_sends_and_failure_keeps_prompt() {
     use egui::Key;
     let mut harness = harness();
-    harness.state_mut().set_rewriter(Arc::new(FakeRewriter {
-        reply: Err("quota exceeded".into()),
-    }));
+    harness
+        .state_mut()
+        .set_rewriter(Arc::new(FakeRewriter::replying(Err(
+            "quota exceeded".into()
+        ))));
     type_prompt(&mut harness, "keep me");
     let input = harness.get_by_role_and_label(Role::TextInput, "AI");
     input.focus();
@@ -307,9 +311,11 @@ fn enhance_dictates_into_the_ai_bar_and_confirm_sends_it() {
     use promptbox::core::AppAction;
     use promptbox::ports::speech::{SpeechEvent, SpeechEventKind};
     let mut harness = harness();
-    harness.state_mut().set_rewriter(Arc::new(FakeRewriter {
-        reply: Ok("- make the tests pass".into()),
-    }));
+    harness
+        .state_mut()
+        .set_rewriter(Arc::new(FakeRewriter::replying(Ok(
+            "- make the tests pass".into(),
+        ))));
     type_prompt(&mut harness, "make the tests pass");
     let ev = |sequence, kind| {
         AppAction::SpeechEventReceived(SpeechEvent {
@@ -422,6 +428,86 @@ fn saved_projects_and_selection_are_restored_at_launch() {
         harness.state().core().project().vocabulary,
         vec!["Pydantic"]
     );
+}
+
+fn quote_tool(review: bool) -> promptbox::ports::tools::ToolManifest {
+    promptbox::ports::tools::ToolManifest {
+        name: "save_quote".into(),
+        description: "Save a quote".into(),
+        parameters: serde_json::json!({"type": "object", "properties": {"quote": {"type": "string"}}}),
+        command: vec!["true".into()],
+        review,
+        dir: std::path::PathBuf::new(),
+    }
+}
+
+#[test]
+fn slash_tool_in_the_ai_bar_runs_the_chosen_tool_with_the_prompt() {
+    use egui::Key;
+    use promptbox::ports::tools::{FakeToolRunner, ToolCall, ToolOutcome};
+    let mut harness = harness();
+    harness.state_mut().set_rewriter(Arc::new(FakeRewriter {
+        reply: Ok(String::new()),
+        tool: Some(ToolCall {
+            name: "save_quote".into(),
+            arguments: serde_json::json!({"quote": "Be kind."}),
+        }),
+    }));
+    let runner = Arc::new(FakeToolRunner::new(Ok(ToolOutcome {
+        message: "saved 1 quote".into(),
+        replace_prompt: None,
+    })));
+    harness.state_mut().set_tool_runner(runner.clone());
+    harness.state_mut().set_tools(vec![quote_tool(false)]);
+    type_prompt(&mut harness, "Be kind. - someone");
+    let input = harness.get_by_role_and_label(Role::TextInput, "AI");
+    input.focus();
+    input.type_text("/tool save that quote");
+    harness.run_steps(2);
+    harness.key_press(Key::Enter);
+    wait_for_ai(&mut harness);
+    wait_for_ai(&mut harness);
+    let calls = runner.calls.lock().unwrap();
+    assert_eq!(calls.len(), 1);
+    assert_eq!(calls[0].0, "save_quote");
+    assert_eq!(calls[0].1.prompt, "Be kind. - someone");
+    assert_eq!(calls[0].1.arguments["quote"], "Be kind.");
+    drop(calls);
+    harness.run_steps(2);
+    harness.get_by_label("save_quote: saved 1 quote");
+    assert_eq!(
+        harness.state().core().doc().committed(),
+        "Be kind. - someone"
+    );
+}
+
+#[test]
+fn review_tools_wait_for_run_in_the_notification_strip() {
+    use promptbox::core::AppAction;
+    use promptbox::ports::tools::{FakeToolRunner, ToolCall, ToolOutcome};
+    let mut harness = harness();
+    harness.state_mut().set_rewriter(Arc::new(FakeRewriter {
+        reply: Ok(String::new()),
+        tool: Some(ToolCall {
+            name: "save_quote".into(),
+            arguments: serde_json::json!({}),
+        }),
+    }));
+    let runner = Arc::new(FakeToolRunner::new(Ok(ToolOutcome::default())));
+    harness.state_mut().set_tool_runner(runner.clone());
+    harness.state_mut().set_tools(vec![quote_tool(true)]);
+    type_prompt(&mut harness, "x");
+    harness.state_mut().dispatch(AppAction::ToolRequest {
+        request: "save it".into(),
+    });
+    wait_for_ai(&mut harness);
+    harness.get_by_label("Run save_quote?");
+    assert!(runner.calls.lock().unwrap().is_empty());
+    harness.get_by_label("Run").click();
+    wait_for_ai(&mut harness);
+    harness.run_steps(2);
+    assert_eq!(runner.calls.lock().unwrap().len(), 1);
+    harness.get_by_label("save_quote: done");
 }
 
 #[test]

@@ -17,11 +17,12 @@ use crate::adapters::typist::SystemTypist;
 use crate::core::action::RECENT_LIMIT;
 use crate::core::action::TypingPolicy;
 use crate::core::{AppAction, AppCore, Clock, Effect, Project};
-use crate::ports::ai::{RewriteResponse, Rewriter};
+use crate::ports::ai::Rewriter;
 use crate::ports::clipboard::Clipboard;
 use crate::ports::engine::{AudioChunk, EngineConfig, PushError, SpeechEngine};
 use crate::ports::history::{HistoryStore, Settings, ThemeChoice};
 use crate::ports::speech::SpeechEventKind;
+use crate::ports::tools::ToolRunner;
 use crate::ports::typist::Typist;
 
 /// Compact "docked" window size in points: the compact top bar, the
@@ -120,7 +121,13 @@ pub struct PromptBoxApp {
     /// Draft values in the settings window until saved.
     pub settings_draft: Settings,
     rewriter: Option<std::sync::Arc<dyn Rewriter>>,
-    ai_rx: Option<Receiver<(u64, Result<RewriteResponse, String>)>>,
+    /// Result of the AI or tool worker in flight, as the action to dispatch.
+    ai_rx: Option<Receiver<AppAction>>,
+    tool_runner: std::sync::Arc<dyn ToolRunner>,
+    /// Where tool folders live; `None` in tests without a data directory.
+    tools_dir: Option<PathBuf>,
+    /// Manifests that failed to load, for Settings.
+    pub tool_problems: Vec<String>,
     typist: Box<dyn Typist>,
     /// Whether our own window is focused this frame (from egui).
     window_focused: bool,
@@ -136,7 +143,52 @@ impl PromptBoxApp {
             Box::new(FileStore::new(FileStore::default_dir())),
         );
         app.typist = Box::new(SystemTypist::default());
+        app.tools_dir = Some(FileStore::default_dir().join("tools"));
+        app.reload_tools();
         app
+    }
+
+    /// Re-reads every tool manifest from the tools folder.
+    pub fn reload_tools(&mut self) {
+        let Some(dir) = &self.tools_dir else {
+            return;
+        };
+        let (tools, problems) = crate::adapters::tools::load_manifests(dir);
+        for p in &problems {
+            log::warn!("tool manifest: {p}");
+        }
+        log::info!("{} tool(s) loaded from {}", tools.len(), dir.display());
+        self.tool_problems = problems;
+        self.core.set_tools(tools);
+    }
+
+    /// The folder tool plugins are read from.
+    #[must_use]
+    pub fn tools_dir(&self) -> Option<&PathBuf> {
+        self.tools_dir.as_ref()
+    }
+
+    /// Installs a tool runner directly (tests use a fake).
+    pub fn set_tool_runner(&mut self, runner: std::sync::Arc<dyn ToolRunner>) {
+        self.tool_runner = runner;
+    }
+
+    /// Registers tools without a folder (tests).
+    pub fn set_tools(&mut self, tools: Vec<crate::ports::tools::ToolManifest>) {
+        self.core.set_tools(tools);
+    }
+
+    /// Runs `job` on a named worker thread; its result is dispatched from
+    /// the next frame's pump.
+    fn spawn_worker(&mut self, name: &str, job: impl FnOnce() -> AppAction + Send + 'static) {
+        let (tx, rx) = channel();
+        self.ai_rx = Some(rx);
+        std::thread::Builder::new()
+            .name(name.to_owned())
+            .spawn(move || {
+                let _ = tx.send(job());
+            })
+            .expect("spawn worker thread");
     }
 
     /// Wires explicit adapters (tests use fakes) and loads persisted state.
@@ -178,6 +230,9 @@ impl PromptBoxApp {
             settings_draft: Settings::default(),
             rewriter: None,
             ai_rx: None,
+            tool_runner: std::sync::Arc::new(crate::adapters::tools::ProcessToolRunner),
+            tools_dir: None,
+            tool_problems: Vec::new(),
             typist: Box::new(crate::adapters::typist::FakeTypist::default()),
             window_focused: true,
         };
@@ -455,60 +510,111 @@ impl PromptBoxApp {
         let effects = self.core.dispatch(action, now);
         self.remember_selected_project();
         for effect in effects {
-            let result = match effect {
-                Effect::WriteClipboard(text) => {
-                    AppAction::ClipboardWriteFinished(self.clipboard.write_text(&text))
-                }
-                Effect::SaveHistory(prompt) => AppAction::HistorySaveFinished {
-                    id: prompt.id,
-                    result: self.history.save_sent(&prompt),
-                },
-                Effect::SaveDraft(text) => {
-                    AppAction::DraftSaveFinished(self.history.save_draft(&text))
-                }
-                Effect::SaveProjects(list) => {
-                    AppAction::ProjectsSaveFinished(self.history.save_projects(&list))
-                }
-                Effect::StopListening => {
-                    self.stop_listening();
-                    continue;
-                }
-                Effect::TypeIntoActiveApp { id, submit } => AppAction::TypeFinished {
-                    id,
-                    result: self.typist.paste_and_submit(submit),
-                },
-                Effect::AiRewrite(request) => {
-                    let Some(rewriter) = self.rewriter.clone() else {
-                        self.dispatch(AppAction::AiRewriteFinished {
-                            id: request.id,
-                            result: Err("no OpenAI API key; set one in Settings".into()),
-                        });
-                        continue;
-                    };
-                    let (tx, rx) = channel();
-                    self.ai_rx = Some(rx);
-                    std::thread::Builder::new()
-                        .name("ai-rewrite".into())
-                        .spawn(move || {
-                            let t = Instant::now();
-                            let result = rewriter.rewrite(&request);
-                            match &result {
-                                Ok(r) => log::info!(
-                                    "ai rewrite: {} prompt + {} completion tokens in {:.1} s",
-                                    r.prompt_tokens,
-                                    r.completion_tokens,
-                                    t.elapsed().as_secs_f64()
-                                ),
-                                Err(e) => log::warn!("ai rewrite failed: {e}"),
-                            }
-                            let _ = tx.send((request.id, result));
-                        })
-                        .expect("spawn ai thread");
-                    continue;
-                }
-            };
-            self.dispatch(result);
+            if let Some(result) = self.run_effect(effect) {
+                self.dispatch(result);
+            }
         }
+    }
+
+    /// Performs one effect; returns the action that reports its result,
+    /// or `None` when the result arrives later through a worker.
+    fn run_effect(&mut self, effect: Effect) -> Option<AppAction> {
+        let result = match effect {
+            Effect::WriteClipboard(text) => {
+                AppAction::ClipboardWriteFinished(self.clipboard.write_text(&text))
+            }
+            Effect::SaveHistory(prompt) => AppAction::HistorySaveFinished {
+                id: prompt.id,
+                result: self.history.save_sent(&prompt),
+            },
+            Effect::SaveDraft(text) => AppAction::DraftSaveFinished(self.history.save_draft(&text)),
+            Effect::SaveProjects(list) => {
+                AppAction::ProjectsSaveFinished(self.history.save_projects(&list))
+            }
+            Effect::StopListening => {
+                self.stop_listening();
+                return None;
+            }
+            Effect::TypeIntoActiveApp { id, submit } => AppAction::TypeFinished {
+                id,
+                result: self.typist.paste_and_submit(submit),
+            },
+            Effect::AiRewrite(request) => {
+                let Some(rewriter) = self.rewriter.clone() else {
+                    self.dispatch(AppAction::AiRewriteFinished {
+                        id: request.id,
+                        result: Err("no OpenAI API key; set one in Settings".into()),
+                    });
+                    return None;
+                };
+                self.spawn_worker("ai-rewrite", move || {
+                    let t = Instant::now();
+                    let result = rewriter.rewrite(&request);
+                    match &result {
+                        Ok(r) => log::info!(
+                            "ai rewrite: {} prompt + {} completion tokens in {:.1} s",
+                            r.prompt_tokens,
+                            r.completion_tokens,
+                            t.elapsed().as_secs_f64()
+                        ),
+                        Err(e) => log::warn!("ai rewrite failed: {e}"),
+                    }
+                    AppAction::AiRewriteFinished {
+                        id: request.id,
+                        result,
+                    }
+                });
+                return None;
+            }
+            Effect::ChooseTool(request) => {
+                let Some(rewriter) = self.rewriter.clone() else {
+                    self.dispatch(AppAction::ToolChosen {
+                        id: request.id,
+                        result: Err("no OpenAI API key; set one in Settings".into()),
+                    });
+                    return None;
+                };
+                self.spawn_worker("ai-tool-choice", move || {
+                    let result = rewriter.choose_tool(&request);
+                    match &result {
+                        Ok(c) => log::info!(
+                            "tool choice: {:?} ({} prompt + {} completion tokens)",
+                            c.call.as_ref().map(|c| &c.name),
+                            c.prompt_tokens,
+                            c.completion_tokens
+                        ),
+                        Err(e) => log::warn!("tool choice failed: {e}"),
+                    }
+                    AppAction::ToolChosen {
+                        id: request.id,
+                        result,
+                    }
+                });
+                return None;
+            }
+            Effect::RunTool { id, tool, input } => {
+                let runner = self.tool_runner.clone();
+                self.spawn_worker("tool-run", move || {
+                    let t = Instant::now();
+                    let result = runner.run(&tool, &input);
+                    match &result {
+                        Ok(_) => log::info!(
+                            "tool {} finished in {:.1} s",
+                            tool.name,
+                            t.elapsed().as_secs_f64()
+                        ),
+                        Err(e) => log::warn!("tool {} failed: {e}", tool.name),
+                    }
+                    AppAction::ToolFinished {
+                        id,
+                        name: tool.name,
+                        result,
+                    }
+                });
+                return None;
+            }
+        };
+        Some(result)
     }
 
     // ---- live dictation ---------------------------------------------
@@ -705,9 +811,9 @@ impl PromptBoxApp {
 
     fn pump_ai(&mut self) {
         let Some(rx) = &self.ai_rx else { return };
-        if let Ok((id, result)) = rx.try_recv() {
+        if let Ok(action) = rx.try_recv() {
             self.ai_rx = None;
-            self.dispatch(AppAction::AiRewriteFinished { id, result });
+            self.dispatch(action);
         }
     }
 

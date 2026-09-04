@@ -104,6 +104,7 @@ sentence." The **Commands** button shows this list in the app.
 | Zevro stop | Stop listening |
 | Zevro clean up | AI clean-up of the whole prompt (undoable) |
 | Zevro enhance … confirm | Dictate an AI instruction (see below) |
+| Zevro tool … confirm | Dictate a request for a registered tool (see Tools) |
 | Zevro … abort | Cancel the command you started saying |
 
 Commands are extracted only from finalized utterances, so each runs exactly
@@ -169,6 +170,46 @@ from, in order: the key saved in Settings, the `OPENAI_API_KEY` environment
 variable, or a `.env` file in the working directory. Token usage is logged
 per call and totalled in Settings.
 
+## Tools (plugins)
+
+A tool is a folder with a `tool.json` manifest and something to run. The
+model picks the tool for a spoken or typed request and fills in its
+arguments; the app runs the script and shows what it said. No Rust needed:
+`examples/tools/save_quote` is a ten-line Python script that appends a
+dictated quotation to a SQLite file.
+
+Ask for one with **Zevro tool** (captured like enhance: say the request,
+then "confirm" or "abort") or by typing `/tool …` in the AI box. Read a
+quote into the prompt, then "Zevro tool save that quote, confirm".
+
+```json
+{
+  "name": "save_quote",
+  "description": "Save a quotation to the local quotes database.",
+  "parameters": { "type": "object", "properties": { "quote": { "type": "string" } }, "required": ["quote"] },
+  "command": ["python3", "save_quote.py"],
+  "review": false
+}
+```
+
+- `parameters` is a JSON Schema and goes to the model verbatim. The prompt
+  text is never an argument; the script always gets it separately.
+- `command` runs in the tool's folder. A bare program name is looked up on
+  `PATH`, or in the folder if a file of that name is there.
+- `review: true` shows the chosen call in the notification strip with
+  **Run** and **Cancel** instead of running it at once.
+
+The script receives JSON on stdin, `{"arguments": {...}, "prompt": "..."}`,
+and the prompt again in `PROMPTBOX_PROMPT`. It replies on stdout with
+`{"message": "...", "replace_prompt": "..."}` (both optional; plain text is
+taken as the message). A non-zero exit reports stderr as the error. Scripts
+are killed after 30 s. The model's answer, the call being run, and the
+result all appear in the notification strip.
+
+Tools live in `tools/` under the data directory, one folder each. Settings
+lists what loaded and has a Reload button. Scripts run as you, with your
+permissions: the folder is the trust boundary.
+
 ## Settings and data
 
 ⚙ in the top bar opens Settings: OpenAI API key (stored masked), model,
@@ -185,6 +226,7 @@ Support/promptbox` on macOS:
 | `draft.txt` | autosaved current prompt, 500 ms after each change |
 | `history.json` | last 50 sent prompts |
 | `projects.json` | projects: vocabulary, corrections, glossary, AI context |
+| `tools/<name>/tool.json` | tool plugins (see Tools) |
 | `models/ggml-base.en.bin` | the speech model |
 
 ## Development
@@ -216,13 +258,15 @@ src/ports/               traits the core needs
   speech.rs, engine.rs   speech events and the speech-engine boundary
   clipboard.rs           clipboard that reports failure
   history.rs             sent prompts, draft, settings, projects
-  ai.rs                  prompt rewriter
+  ai.rs                  prompt rewriter and tool chooser
+  tools.rs               tool manifests, runner, script I/O contract
   typist.rs              keyboard injection into the focused app
 src/adapters/
   audio.rs               cpal capture -> ring buffer -> resample -> 20 ms chunks
   speech/                whisper.cpp engine: VAD, worker per session, partials
   model.rs               model path and background download
-  openai.rs              chat-completions rewriter, .env reader
+  openai.rs              chat-completions rewriter and tool calling, .env reader
+  tools.rs               tool.json discovery, child-process runner
   typist.rs              enigo paste + Return, Accessibility check
   clipboard.rs, persistence.rs, fake_speech.rs
 src/app.rs               PromptBoxApp: owns core + adapters + recognizer + mic; runs effects

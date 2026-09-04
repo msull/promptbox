@@ -12,9 +12,12 @@ use crate::core::commands::{self, Command, DEFAULT_TRIGGER};
 use crate::core::document::{Document, EditSource, OverlapPolicy};
 use crate::core::project::{Project, default_projects};
 use crate::core::text::{last_paragraph_range, last_sentence_range, paragraph_break_for};
-use crate::ports::ai::{CLEAN_UP_INSTRUCTION, RewriteRequest, RewriteResponse};
+use crate::ports::ai::{
+    CLEAN_UP_INSTRUCTION, RewriteRequest, RewriteResponse, ToolChoice, ToolChoiceRequest,
+};
 use crate::ports::history::SentPrompt;
 use crate::ports::speech::{SessionId, SpeechEvent, SpeechEventKind};
+use crate::ports::tools::{ToolCall, ToolInput, ToolManifest, ToolOutcome};
 
 const TOAST_DURATION: Duration = Duration::from_millis(2500);
 const DRAFT_DEBOUNCE: Duration = Duration::from_millis(500);
@@ -124,13 +127,48 @@ pub enum AppAction {
         id: u64,
         result: Result<RewriteResponse, String>,
     },
+    /// Ask the model which registered tool this request means, then run it.
+    ToolRequest {
+        request: String,
+    },
+    ToolChosen {
+        id: u64,
+        result: Result<ToolChoice, String>,
+    },
+    /// The user accepted a call that was waiting for review.
+    RunPendingTool,
+    CancelPendingTool,
+    ToolFinished {
+        id: u64,
+        name: String,
+        result: Result<ToolOutcome, String>,
+    },
     Tick,
+}
+
+/// What a spoken capture is for.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum CaptureKind {
+    /// An AI rewrite instruction ("Zevro enhance").
+    #[default]
+    Enhance,
+    /// A request for a registered tool ("Zevro tool").
+    Tool,
+}
+
+/// A tool call the model chose that is waiting for the user's go-ahead
+/// because its manifest asks for review.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PendingTool {
+    pub call: ToolCall,
+    pub tool: ToolManifest,
 }
 
 /// An AI instruction being spoken. `committed` holds finalized utterances;
 /// `partial` is the current hypothesis, shown but not yet kept.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct InstructionCapture {
+    pub kind: CaptureKind,
     pub committed: String,
     pub partial: String,
 }
@@ -140,6 +178,24 @@ impl InstructionCapture {
     #[must_use]
     pub fn text(&self) -> String {
         join_spoken(&self.committed, &self.partial)
+    }
+}
+
+/// `name {"k": "v"}` for toasts, compact and without a trailing empty object.
+#[must_use]
+pub fn describe_call(call: &ToolCall) -> String {
+    let args = call.arguments.to_string();
+    if args == "{}" || args == "null" {
+        call.name.clone()
+    } else {
+        format!("{} {args}", call.name)
+    }
+}
+
+fn capture_name(kind: CaptureKind) -> &'static str {
+    match kind {
+        CaptureKind::Enhance => "enhance",
+        CaptureKind::Tool => "tool",
     }
 }
 
@@ -161,6 +217,14 @@ pub enum Effect {
     SaveProjects(Vec<Project>),
     /// Run this rewrite on a worker and report back with `AiRewriteFinished`.
     AiRewrite(RewriteRequest),
+    /// Ask the model on a worker; report back with `ToolChosen`.
+    ChooseTool(ToolChoiceRequest),
+    /// Run the script on a worker; report back with `ToolFinished`.
+    RunTool {
+        id: u64,
+        tool: ToolManifest,
+        input: ToolInput,
+    },
     /// Paste the clipboard into the focused app; `submit` presses Return.
     TypeIntoActiveApp {
         id: u64,
@@ -221,6 +285,10 @@ pub struct AppCore {
     ai_pending: Option<u64>,
     /// Voice-dictated AI instruction in progress ("Zevro enhance … confirm").
     capture: Option<InstructionCapture>,
+    tools: Vec<ToolManifest>,
+    /// A tool choice or run in flight.
+    tool_pending: Option<u64>,
+    pending_tool: Option<PendingTool>,
     ai_prompt_tokens: u64,
     ai_completion_tokens: u64,
     typing: TypingPolicy,
@@ -254,6 +322,9 @@ impl AppCore {
             trigger: DEFAULT_TRIGGER.to_owned(),
             ai_pending: None,
             capture: None,
+            tools: Vec::new(),
+            tool_pending: None,
+            pending_tool: None,
             ai_prompt_tokens: 0,
             ai_completion_tokens: 0,
             typing: TypingPolicy {
@@ -341,10 +412,26 @@ impl AppCore {
         self.capture.as_ref()
     }
 
-    /// True while an AI rewrite is in flight.
+    /// True while an AI rewrite or a tool request is in flight.
     #[must_use]
     pub fn ai_busy(&self) -> bool {
-        self.ai_pending.is_some()
+        self.ai_pending.is_some() || self.tool_pending.is_some()
+    }
+
+    #[must_use]
+    pub fn tools(&self) -> &[ToolManifest] {
+        &self.tools
+    }
+
+    /// Registers the tools the model may choose from.
+    pub fn set_tools(&mut self, tools: Vec<ToolManifest>) {
+        self.tools = tools;
+    }
+
+    /// A chosen call waiting for Run or Cancel.
+    #[must_use]
+    pub fn pending_tool(&self) -> Option<&PendingTool> {
+        self.pending_tool.as_ref()
     }
 
     /// Tokens spent on AI rewrites this session: (prompt, completion).
@@ -591,6 +678,45 @@ impl AppCore {
                     log::debug!("ignoring stale AI result {id}");
                 }
             }
+            AppAction::ToolRequest { request } => {
+                self.begin_tool_request(request, now, &mut effects);
+            }
+            AppAction::ToolChosen { id, result } => {
+                if self.tool_pending == Some(id) {
+                    self.tool_pending = None;
+                    self.on_tool_chosen(result, now, &mut effects);
+                }
+            }
+            AppAction::RunPendingTool => {
+                if let Some(p) = self.pending_tool.take() {
+                    self.start_tool(p.tool, p.call, now, &mut effects);
+                }
+            }
+            AppAction::CancelPendingTool => {
+                if self.pending_tool.take().is_some() {
+                    self.show_toast("Tool call cancelled".to_owned(), false, now.mono);
+                }
+            }
+            AppAction::ToolFinished { id, name, result } => {
+                if self.tool_pending == Some(id) {
+                    self.tool_pending = None;
+                    match result {
+                        Ok(outcome) => {
+                            if let Some(text) = outcome.replace_prompt {
+                                self.doc.replace_all_from(&text, EditSource::Ai);
+                                self.mark_dirty(now.mono);
+                            }
+                            let msg = if outcome.message.is_empty() {
+                                format!("{name}: done")
+                            } else {
+                                format!("{name}: {}", outcome.message)
+                            };
+                            self.show_toast(msg, false, now.mono);
+                        }
+                        Err(e) => self.show_toast(format!("Tool {e}"), true, now.mono),
+                    }
+                }
+            }
             AppAction::Tick => self.check_stall(now.mono),
         }
         self.maybe_autosave(now.mono, &mut effects);
@@ -715,20 +841,21 @@ impl AppCore {
         match commands::capture(text) {
             commands::Capture::Continue(t) => cap.committed = join_spoken(&cap.committed, &t),
             commands::Capture::Abort => {
+                let what = capture_name(cap.kind);
                 self.capture = None;
-                self.show_toast("Voice: enhance aborted".to_owned(), false, clock.mono);
+                self.show_toast(format!("Voice: {what} aborted"), false, clock.mono);
             }
             commands::Capture::Confirm(t) => {
+                let kind = cap.kind;
                 let instruction = join_spoken(&cap.committed, &t);
                 self.capture = None;
                 if instruction.is_empty() {
-                    self.show_toast(
-                        "Voice: no instruction to send".to_owned(),
-                        false,
-                        clock.mono,
-                    );
+                    self.show_toast("Voice: nothing to send".to_owned(), false, clock.mono);
                 } else {
-                    self.begin_rewrite(instruction, clock, effects);
+                    match kind {
+                        CaptureKind::Enhance => self.begin_rewrite(instruction, clock, effects),
+                        CaptureKind::Tool => self.begin_tool_request(instruction, clock, effects),
+                    }
                 }
             }
         }
@@ -748,12 +875,23 @@ impl AppCore {
             Command::Copy => AppAction::CopyPrompt,
             Command::Send => AppAction::SendPrompt,
             Command::CleanUp => AppAction::AiCleanUp,
-            Command::Enhance(rest) => {
-                self.capture = Some(InstructionCapture::default());
+            Command::Enhance(rest) | Command::Tool(rest) => {
+                let kind = match cmd {
+                    Command::Tool(_) => CaptureKind::Tool,
+                    _ => CaptureKind::Enhance,
+                };
+                self.capture = Some(InstructionCapture {
+                    kind,
+                    ..InstructionCapture::default()
+                });
                 self.capture_spoken(rest, clock, effects);
                 if self.capture.is_some() {
+                    let what = match kind {
+                        CaptureKind::Enhance => "the AI instruction",
+                        CaptureKind::Tool => "the tool request",
+                    };
                     self.show_toast(
-                        "Voice: dictate the AI instruction, then say \"confirm\"".to_owned(),
+                        format!("Voice: dictate {what}, then say \"confirm\""),
                         false,
                         clock.mono,
                     );
@@ -789,6 +927,99 @@ impl AppCore {
         {
             self.show_toast(format!("Voice: {}", cmd.label()), false, clock.mono);
         }
+    }
+
+    fn begin_tool_request(&mut self, request: String, now: Clock, effects: &mut Vec<Effect>) {
+        if self.tools.is_empty() {
+            self.show_toast(
+                "No tools registered: add folders with a tool.json under tools/".to_owned(),
+                true,
+                now.mono,
+            );
+            return;
+        }
+        if self.ai_busy() {
+            self.show_toast("AI is still working…".to_owned(), false, now.mono);
+            return;
+        }
+        if request.trim().is_empty() {
+            self.show_toast(
+                "Say what the tool should do first".to_owned(),
+                false,
+                now.mono,
+            );
+            return;
+        }
+        self.doc.commit_provisional();
+        let id = self.fresh_send_id(now.wall);
+        self.tool_pending = Some(id);
+        effects.push(Effect::ChooseTool(ToolChoiceRequest {
+            id,
+            request,
+            prompt: self.doc.committed().to_owned(),
+            context: self.project().ai_context(),
+            tools: self.tools.clone(),
+        }));
+    }
+
+    fn on_tool_chosen(
+        &mut self,
+        result: Result<ToolChoice, String>,
+        now: Clock,
+        effects: &mut Vec<Effect>,
+    ) {
+        let choice = match result {
+            Ok(c) => c,
+            Err(e) => {
+                self.show_toast(format!("Tool choice failed: {e}"), true, now.mono);
+                return;
+            }
+        };
+        self.ai_prompt_tokens += choice.prompt_tokens;
+        self.ai_completion_tokens += choice.completion_tokens;
+        let Some(call) = choice.call else {
+            let why = if choice.message.is_empty() {
+                "no tool matched".to_owned()
+            } else {
+                choice.message
+            };
+            self.show_toast(format!("No tool run: {why}"), true, now.mono);
+            return;
+        };
+        let Some(tool) = self.tools.iter().find(|t| t.name == call.name).cloned() else {
+            self.show_toast(
+                format!("Model chose unknown tool \"{}\"", call.name),
+                true,
+                now.mono,
+            );
+            return;
+        };
+        if tool.review {
+            self.show_toast(format!("Review: {}", describe_call(&call)), false, now.mono);
+            self.pending_tool = Some(PendingTool { call, tool });
+        } else {
+            self.start_tool(tool, call, now, effects);
+        }
+    }
+
+    fn start_tool(
+        &mut self,
+        tool: ToolManifest,
+        call: ToolCall,
+        now: Clock,
+        effects: &mut Vec<Effect>,
+    ) {
+        let id = self.fresh_send_id(now.wall);
+        self.tool_pending = Some(id);
+        self.show_toast(format!("Running {}", describe_call(&call)), false, now.mono);
+        effects.push(Effect::RunTool {
+            id,
+            tool,
+            input: ToolInput {
+                arguments: call.arguments,
+                prompt: self.doc.committed().to_owned(),
+            },
+        });
     }
 
     fn begin_rewrite(&mut self, instruction: String, now: Clock, effects: &mut Vec<Effect>) {
@@ -1675,6 +1906,160 @@ mod tests {
         assert!(matches!(effects.as_slice(), [Effect::SaveProjects(l)] if l.len() == 2));
         core.dispatch(AppAction::ReplaceProjects(Vec::new()), Clock::at(3));
         assert_eq!(core.project().name, "Default", "an empty list falls back");
+    }
+
+    fn tool(name: &str, review: bool) -> ToolManifest {
+        ToolManifest {
+            name: name.into(),
+            description: "test".into(),
+            parameters: serde_json::json!({"type": "object", "properties": {}}),
+            command: vec!["true".into()],
+            review,
+            dir: std::path::PathBuf::new(),
+        }
+    }
+
+    fn chosen(name: &str) -> ToolChoice {
+        ToolChoice {
+            call: Some(ToolCall {
+                name: name.into(),
+                arguments: serde_json::json!({"quote": "Be kind."}),
+            }),
+            message: String::new(),
+            prompt_tokens: 3,
+            completion_tokens: 2,
+        }
+    }
+
+    #[test]
+    fn tool_request_asks_the_model_then_runs_the_chosen_tool_with_the_prompt() {
+        let mut core = AppCore::new();
+        core.set_tools(vec![tool("save_quote", false)]);
+        typed(&mut core, "Be kind. - someone", 0);
+        let effects = core.dispatch(
+            AppAction::ToolRequest {
+                request: "save that quote".into(),
+            },
+            Clock::at(1),
+        );
+        let [Effect::ChooseTool(req)] = effects.as_slice() else {
+            panic!("expected ChooseTool, got {effects:?}");
+        };
+        assert_eq!(req.prompt, "Be kind. - someone");
+        assert_eq!(req.tools.len(), 1);
+        assert!(core.ai_busy());
+
+        let effects = core.dispatch(
+            AppAction::ToolChosen {
+                id: req.id,
+                result: Ok(chosen("save_quote")),
+            },
+            Clock::at(2),
+        );
+        let [Effect::RunTool { id, tool, input }] = effects.as_slice() else {
+            panic!("expected RunTool, got {effects:?}");
+        };
+        assert_eq!(tool.name, "save_quote");
+        assert_eq!(input.prompt, "Be kind. - someone");
+        assert_eq!(input.arguments["quote"], "Be kind.");
+        assert_eq!(core.ai_tokens(), (3, 2));
+
+        core.dispatch(
+            AppAction::ToolFinished {
+                id: *id,
+                name: "save_quote".into(),
+                result: Ok(ToolOutcome {
+                    message: "saved".into(),
+                    replace_prompt: Some(String::new()),
+                }),
+            },
+            Clock::at(3),
+        );
+        assert!(!core.ai_busy());
+        assert_eq!(core.doc().committed(), "", "replace_prompt applied");
+        assert_eq!(toast_text(&core), "save_quote: saved");
+        core.dispatch(AppAction::Undo, Clock::at(4));
+        assert_eq!(core.doc().committed(), "Be kind. - someone");
+    }
+
+    #[test]
+    fn tool_with_review_waits_for_run_and_no_match_toasts() {
+        let mut core = AppCore::new();
+        core.set_tools(vec![tool("deploy", true)]);
+        typed(&mut core, "ship it", 0);
+        let effects = core.dispatch(
+            AppAction::ToolRequest {
+                request: "deploy".into(),
+            },
+            Clock::at(1),
+        );
+        let [Effect::ChooseTool(req)] = effects.as_slice() else {
+            panic!("{effects:?}");
+        };
+        let effects = core.dispatch(
+            AppAction::ToolChosen {
+                id: req.id,
+                result: Ok(chosen("deploy")),
+            },
+            Clock::at(2),
+        );
+        assert!(effects.is_empty(), "review tools do not run yet");
+        assert_eq!(core.pending_tool().unwrap().call.name, "deploy");
+        assert!(!core.ai_busy());
+        let effects = core.dispatch(AppAction::RunPendingTool, Clock::at(3));
+        assert!(matches!(effects.as_slice(), [Effect::RunTool { .. }]));
+        assert!(core.pending_tool().is_none());
+
+        let mut core = AppCore::new();
+        core.set_tools(vec![tool("deploy", false)]);
+        typed(&mut core, "x", 0);
+        let effects = core.dispatch(
+            AppAction::ToolRequest {
+                request: "make coffee".into(),
+            },
+            Clock::at(1),
+        );
+        let [Effect::ChooseTool(req)] = effects.as_slice() else {
+            panic!("{effects:?}");
+        };
+        let effects = core.dispatch(
+            AppAction::ToolChosen {
+                id: req.id,
+                result: Ok(ToolChoice {
+                    call: None,
+                    message: "No tool makes coffee.".into(),
+                    prompt_tokens: 0,
+                    completion_tokens: 0,
+                }),
+            },
+            Clock::at(2),
+        );
+        assert!(effects.is_empty());
+        assert_eq!(toast_text(&core), "No tool run: No tool makes coffee.");
+
+        let mut core = AppCore::new();
+        core.dispatch(
+            AppAction::ToolRequest {
+                request: "anything".into(),
+            },
+            Clock::at(1),
+        );
+        assert!(toast_text(&core).starts_with("No tools registered"));
+    }
+
+    #[test]
+    fn spoken_tool_request_is_captured_like_enhance() {
+        let mut core = AppCore::new();
+        core.set_tools(vec![tool("save_quote", false)]);
+        typed(&mut core, "Be kind.", 0);
+        core.dispatch(AppAction::SessionStarted(1), Clock::at(1));
+        final_at(&mut core, 1, 1, "Zevro tool", 2);
+        assert_eq!(core.instruction_capture().unwrap().kind, CaptureKind::Tool);
+        let effects = final_at(&mut core, 2, 2, "save that quote, confirm", 3);
+        assert!(
+            matches!(effects.as_slice(), [Effect::ChooseTool(r)] if r.request == "save that quote")
+        );
+        assert_eq!(core.doc().committed(), "Be kind.");
     }
 
     #[test]

@@ -45,6 +45,8 @@ pub enum Command {
     /// word in the same utterance; capture continues across utterances
     /// until "confirm" or "abort" (see `capture`).
     Enhance(String),
+    /// Start dictating a tool request; captured like `Enhance`.
+    Tool(String),
     /// The speaker said "abort" after the trigger; nothing runs.
     Aborted,
     /// Trigger heard but the following words matched nothing.
@@ -72,6 +74,7 @@ impl Command {
             Self::Enhance(_) => {
                 "Dictate an AI instruction; say \"confirm\" to send it, \"abort\" to cancel"
             }
+            Self::Tool(_) => "Dictate a request for a registered tool; \"confirm\" runs it",
             Self::Aborted => "Cancel the command you started",
             Self::Unknown(_) => "",
         }
@@ -94,6 +97,7 @@ impl Command {
             Self::StopListening => "stop listening".into(),
             Self::CleanUp => "clean up".into(),
             Self::Enhance(_) => "enhance".into(),
+            Self::Tool(_) => "tool".into(),
             Self::Aborted => "aborted".into(),
             Self::Unknown(w) => format!("unknown command {w:?}"),
         }
@@ -133,6 +137,7 @@ const GRAMMAR: &[(&[&str], Command)] = &[
     (&["clean", "up"], Command::CleanUp),
     (&["cleanup"], Command::CleanUp),
     (&["enhance"], Command::Enhance(String::new())),
+    (&["tool"], Command::Tool(String::new())),
 ];
 
 /// Word that ends an instruction capture and sends it to the AI.
@@ -373,15 +378,19 @@ fn match_command(text: &str, after: &[Token], trigger_key: &str) -> (Command, us
             best = Some((cmd.clone(), n));
         }
     }
-    if let Some((Command::Enhance(_), _)) = best {
-        // Everything up to the next trigger is the instruction, verbatim.
+    if let Some((cmd @ (Command::Enhance(_) | Command::Tool(_)), _)) = &best {
+        // Everything up to the next trigger is the request, verbatim.
         let n = next_trigger(after, 0, trigger_key);
         let payload = if n > 1 {
             text[after[1].range.start..after[n - 1].range.end].trim()
         } else {
             ""
         };
-        return (Command::Enhance(payload.to_owned()), n);
+        let cmd = match cmd {
+            Command::Tool(_) => Command::Tool(payload.to_owned()),
+            _ => Command::Enhance(payload.to_owned()),
+        };
+        return (cmd, n);
     }
     best.unwrap_or_else(|| {
         let n = next_trigger(after, 0, trigger_key);
@@ -632,6 +641,15 @@ mod tests {
         assert_eq!(got.commands, vec![Command::Enhance(String::new())]);
         let got = extract("Zevro enhance never mind abort", DEFAULT_TRIGGER);
         assert_eq!(got.commands, vec![Command::Aborted]);
+    }
+
+    #[test]
+    fn tool_carries_the_rest_of_the_utterance() {
+        let got = extract("Zevro tool save that quote, confirm.", DEFAULT_TRIGGER);
+        assert_eq!(
+            got.commands,
+            vec![Command::Tool("save that quote, confirm.".into())]
+        );
     }
 
     #[test]

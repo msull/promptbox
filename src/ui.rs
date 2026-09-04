@@ -208,7 +208,7 @@ fn ai_row(app: &mut PromptBoxApp, ui: &mut Ui) {
         let busy = app.core().ai_busy();
         let available = app.ai_available();
         let hint = if available {
-            "Ask the AI to change the prompt… (Enter to send)"
+            "Ask the AI to change the prompt, or /tool … (Enter to send)"
         } else {
             "Set an OpenAI key in Settings to use AI"
         };
@@ -229,9 +229,23 @@ fn ai_row(app: &mut PromptBoxApp, ui: &mut Ui) {
             .clicked();
         if (submitted || clicked) && !app.ai_instruction.trim().is_empty() {
             let instruction = std::mem::take(&mut app.ai_instruction);
-            app.dispatch(AppAction::AiRewrite { instruction });
+            // "/tool …" routes to a registered tool instead of a rewrite.
+            let action = match tool_request(&instruction) {
+                Some(request) => AppAction::ToolRequest { request },
+                None => AppAction::AiRewrite { instruction },
+            };
+            app.dispatch(action);
         }
     });
+}
+
+/// The request after a leading `/tool`, if the text is one.
+fn tool_request(text: &str) -> Option<String> {
+    let t = text.trim();
+    let rest = t
+        .strip_prefix("/tool")
+        .filter(|r| r.is_empty() || r.starts_with(char::is_whitespace))?;
+    Some(rest.trim().to_owned())
 }
 
 /// The instruction box while "Zevro enhance" is dictating into it: the
@@ -240,7 +254,11 @@ fn ai_row(app: &mut PromptBoxApp, ui: &mut Ui) {
 fn capture_row(cap: &crate::core::InstructionCapture, ui: &mut Ui) {
     let blue = egui::Color32::from_rgb(0x3a, 0x8d, 0xde);
     ui.horizontal(|ui| {
-        ui.label(RichText::new("AI").small().color(blue));
+        let tag = match cap.kind {
+            crate::core::CaptureKind::Enhance => "AI",
+            crate::core::CaptureKind::Tool => "Tool",
+        };
+        ui.label(RichText::new(tag).small().color(blue));
         egui::Frame::new()
             .fill(blue.gamma_multiply(0.15))
             .stroke(egui::Stroke::new(1.0, blue))
@@ -271,6 +289,32 @@ fn capture_row(cap: &crate::core::InstructionCapture, ui: &mut Ui) {
                 });
             });
     });
+}
+
+/// Registered tools, where they come from, and a Reload button.
+fn tools_settings(app: &mut PromptBoxApp, ui: &mut Ui) {
+    let names: Vec<String> = app.core().tools().iter().map(|t| t.name.clone()).collect();
+    let summary = if names.is_empty() {
+        "Tools: none registered".to_owned()
+    } else {
+        format!("Tools: {}", names.join(", "))
+    };
+    ui.horizontal(|ui| {
+        ui.label(RichText::new(summary).small().weak());
+        if app.tools_dir().is_some() && ui.small_button("Reload").clicked() {
+            app.reload_tools();
+        }
+    });
+    if let Some(dir) = app.tools_dir() {
+        ui.label(
+            RichText::new(format!("Folders with a tool.json in {}", dir.display()))
+                .small()
+                .weak(),
+        );
+    }
+    for p in &app.tool_problems {
+        ui.label(RichText::new(p).small().color(ui.visuals().error_fg_color));
+    }
 }
 
 /// The paste-into-app options for Send, with the Accessibility status.
@@ -395,6 +439,8 @@ fn settings_window(app: &mut PromptBoxApp, ui: &mut Ui) {
                     open_projects = true;
                 }
             });
+            ui.add_space(6.0);
+            tools_settings(app, ui);
         });
     if save {
         app.save_settings_draft();
@@ -495,8 +541,19 @@ fn handle_shortcuts(app: &mut PromptBoxApp, ui: &mut Ui) {
 /// Height of the always-present toast strip at the bottom of the window.
 const NOTIFICATION_STRIP_HEIGHT: f32 = 22.0;
 
-fn notification_strip(app: &PromptBoxApp, ui: &mut Ui) {
+fn notification_strip(app: &mut PromptBoxApp, ui: &mut Ui) {
     ui.horizontal_centered(|ui| {
+        if let Some(pending) = app.core().pending_tool() {
+            let text = format!("Run {}?", crate::core::describe_call(&pending.call));
+            ui.label(RichText::new(&text).small()).on_hover_text(&text);
+            if ui.small_button("Run").clicked() {
+                app.dispatch(AppAction::RunPendingTool);
+            }
+            if ui.small_button("Cancel").clicked() {
+                app.dispatch(AppAction::CancelPendingTool);
+            }
+            return;
+        }
         if let Some(toast) = app.core().toast() {
             let mut text = RichText::new(&toast.text).small();
             if toast.is_error {

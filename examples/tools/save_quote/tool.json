@@ -1,0 +1,15 @@
+{
+  "name": "save_quote",
+  "description": "Save a quotation to the local quotes database. Use when the developer wants to keep, store, or remember a quote they dictated.",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "quote": { "type": "string", "description": "The quotation text, without surrounding quotation marks." },
+      "author": { "type": "string", "description": "Who said or wrote it, if known." },
+      "source": { "type": "string", "description": "Book, talk, or context, if mentioned." }
+    },
+    "required": ["quote"]
+  },
+  "command": ["python3", "save_quote.py"],
+  "review": false
+}
