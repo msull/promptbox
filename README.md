@@ -103,6 +103,7 @@ sentence." The **Commands** button shows this list in the app.
 | Zevro send | Copy and clear |
 | Zevro stop | Stop listening |
 | Zevro clean up | AI clean-up of the whole prompt (undoable) |
+| Zevro enhance … confirm | Dictate an AI instruction (see below) |
 | Zevro … abort | Cancel the command you started saying |
 
 Commands are extracted only from finalized utterances, so each runs exactly
@@ -131,6 +132,12 @@ never touches text while you are dictating.
 - The **AI box** under the prompt takes an instruction ("make it concise",
   "turn this into a bulleted list"). Press ↩ or Ask; the instruction and the
   full prompt go to the model and the reply replaces the prompt.
+
+- **Zevro enhance** dictates an instruction instead of typing it. After
+  "enhance", everything you say goes into the AI box, shown in blue, not
+  into the prompt. Say "confirm" to send it or "abort" to drop it. It works
+  in one breath ("Zevro enhance make it terse, confirm") or across several
+  pauses.
 
 Both are one undoable edit. Requests run on a worker thread with a spinner
 in the bottom bar; a failure leaves the prompt untouched and shows the error.

@@ -45,6 +45,10 @@ pub fn draw(app: &mut PromptBoxApp, ui: &mut Ui) {
 /// Instruction box under the prompt: whatever is typed here is sent to the
 /// model together with the whole prompt, and the reply replaces the prompt.
 fn ai_row(app: &mut PromptBoxApp, ui: &mut Ui) {
+    if let Some(cap) = app.core().instruction_capture().cloned() {
+        capture_row(&cap, ui);
+        return;
+    }
     ui.horizontal(|ui| {
         let busy = app.core().ai_busy();
         let available = app.ai_available();
@@ -72,6 +76,45 @@ fn ai_row(app: &mut PromptBoxApp, ui: &mut Ui) {
             let instruction = std::mem::take(&mut app.ai_instruction);
             app.dispatch(AppAction::AiRewrite { instruction });
         }
+    });
+}
+
+/// The instruction box while "Zevro enhance" is dictating into it: the
+/// spoken words in blue (the current hypothesis dimmed) where the typed
+/// instruction would go, until "confirm" sends it or "abort" drops it.
+fn capture_row(cap: &crate::core::InstructionCapture, ui: &mut Ui) {
+    let blue = egui::Color32::from_rgb(0x3a, 0x8d, 0xde);
+    ui.horizontal(|ui| {
+        ui.label(RichText::new("AI").small().color(blue));
+        egui::Frame::new()
+            .fill(blue.gamma_multiply(0.15))
+            .stroke(egui::Stroke::new(1.0, blue))
+            .corner_radius(4.0)
+            .inner_margin(egui::Margin::symmetric(6, 3))
+            .show(ui, |ui| {
+                ui.set_width(ui.available_width() - 8.0);
+                ui.horizontal_wrapped(|ui| {
+                    ui.spacing_mut().item_spacing.x = 0.0;
+                    if cap.text().is_empty() {
+                        ui.label(
+                            RichText::new("Say what the AI should do, then \"confirm\"…")
+                                .color(blue)
+                                .italics(),
+                        );
+                    } else {
+                        if !cap.committed.is_empty() {
+                            ui.label(RichText::new(&cap.committed).color(blue));
+                        }
+                        if !cap.partial.is_empty() {
+                            let sep = if cap.committed.is_empty() { "" } else { " " };
+                            ui.label(
+                                RichText::new(format!("{sep}{}", cap.partial))
+                                    .color(blue.gamma_multiply(0.6)),
+                            );
+                        }
+                    }
+                });
+            });
     });
 }
 

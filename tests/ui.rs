@@ -303,6 +303,67 @@ fn ai_instruction_box_sends_and_failure_keeps_prompt() {
 }
 
 #[test]
+fn enhance_dictates_into_the_ai_bar_and_confirm_sends_it() {
+    use promptbox::core::AppAction;
+    use promptbox::ports::speech::{SpeechEvent, SpeechEventKind};
+    let mut harness = harness();
+    harness.state_mut().set_rewriter(Arc::new(FakeRewriter {
+        reply: Ok("- make the tests pass".into()),
+    }));
+    type_prompt(&mut harness, "make the tests pass");
+    let ev = |sequence, kind| {
+        AppAction::SpeechEventReceived(SpeechEvent {
+            session: 1,
+            sequence,
+            audio_range: 0..0,
+            kind,
+        })
+    };
+    harness.state_mut().dispatch(AppAction::SessionStarted(1));
+    harness
+        .state_mut()
+        .dispatch(ev(1, SpeechEventKind::VoiceStarted { utterance: 1 }));
+    harness.state_mut().dispatch(ev(
+        2,
+        SpeechEventKind::Final {
+            utterance: 1,
+            text: "Zevro enhance".into(),
+            confidence: None,
+        },
+    ));
+    harness.state_mut().dispatch(ev(
+        3,
+        SpeechEventKind::Partial {
+            utterance: 2,
+            revision: 1,
+            text: "Turn this".into(),
+        },
+    ));
+    harness.run_steps(2);
+    harness.get_by_label("Turn this");
+    assert_eq!(
+        harness.state().core().doc().rendered(),
+        "make the tests pass"
+    );
+
+    harness.state_mut().dispatch(ev(
+        4,
+        SpeechEventKind::Final {
+            utterance: 2,
+            text: "Turn this into a list, confirm.".into(),
+            confidence: None,
+        },
+    ));
+    harness.run_steps(2);
+    assert!(harness.state().core().instruction_capture().is_none());
+    wait_for_ai(&mut harness);
+    assert_ne!(
+        harness.state().core().doc().committed(),
+        "make the tests pass"
+    );
+}
+
+#[test]
 fn settings_window_saves_api_key_and_enables_ai() {
     let mut harness = harness();
     harness.get_by_label("⚙").click();

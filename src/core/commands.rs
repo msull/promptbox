@@ -41,6 +41,10 @@ pub enum Command {
     StopListening,
     /// Run the AI clean-up on the whole prompt.
     CleanUp,
+    /// Start dictating an AI instruction. Carries whatever followed the
+    /// word in the same utterance; capture continues across utterances
+    /// until "confirm" or "abort" (see `capture`).
+    Enhance(String),
     /// The speaker said "abort" after the trigger; nothing runs.
     Aborted,
     /// Trigger heard but the following words matched nothing.
@@ -65,6 +69,9 @@ impl Command {
             Self::Send => "Copy to the clipboard and clear",
             Self::StopListening => "Stop listening",
             Self::CleanUp => "AI clean-up of the whole prompt (undoable)",
+            Self::Enhance(_) => {
+                "Dictate an AI instruction; say \"confirm\" to send it, \"abort\" to cancel"
+            }
             Self::Aborted => "Cancel the command you started",
             Self::Unknown(_) => "",
         }
@@ -86,6 +93,7 @@ impl Command {
             Self::Send => "send".into(),
             Self::StopListening => "stop listening".into(),
             Self::CleanUp => "clean up".into(),
+            Self::Enhance(_) => "enhance".into(),
             Self::Aborted => "aborted".into(),
             Self::Unknown(w) => format!("unknown command {w:?}"),
         }
@@ -124,7 +132,43 @@ const GRAMMAR: &[(&[&str], Command)] = &[
     (&["stop"], Command::StopListening),
     (&["clean", "up"], Command::CleanUp),
     (&["cleanup"], Command::CleanUp),
+    (&["enhance"], Command::Enhance(String::new())),
 ];
+
+/// Word that ends an instruction capture and sends it to the AI.
+pub const CONFIRM_WORD: &str = "confirm";
+
+/// What a finalized utterance means while an instruction is being captured.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Capture {
+    /// Keep collecting; this is the text to append.
+    Continue(String),
+    /// "confirm" was said: the text before it completes the instruction.
+    Confirm(String),
+    Abort,
+}
+
+/// Interprets `text` spoken during an instruction capture. "abort"
+/// anywhere cancels; otherwise the first "confirm" ends the capture and
+/// whatever follows it is dropped.
+#[must_use]
+pub fn capture(text: &str) -> Capture {
+    let tokens = tokenize(text);
+    if tokens.iter().any(|t| close_enough(ABORT_WORD, &t.norm)) {
+        return Capture::Abort;
+    }
+    match tokens
+        .iter()
+        .position(|t| close_enough(CONFIRM_WORD, &t.norm))
+    {
+        Some(k) => {
+            let end = if k == 0 { 0 } else { tokens[k - 1].range.end };
+            let before = text[..end].trim().trim_end_matches([',', ';', ':']);
+            Capture::Confirm(before.to_owned())
+        }
+        None => Capture::Continue(text.trim().to_owned()),
+    }
+}
 
 /// One help row: every spoken phrase that maps to a command, in grammar
 /// order, grouped so the popup stays in sync with what actually parses.
@@ -278,7 +322,7 @@ pub fn extract(text: &str, trigger: &str) -> Extraction {
             i = last + 1;
             continue;
         }
-        let (cmd, mut used) = match_command(&tokens[after..], &trigger_key);
+        let (cmd, mut used) = match_command(text, &tokens[after..], &trigger_key);
         if command_only && !matches!(cmd, Command::Unknown(_)) {
             // Whole utterance is a command: swallow any garbled tail up to
             // the next trigger instead of dictating it.
@@ -315,7 +359,7 @@ fn next_trigger(tokens: &[Token], from: usize, trigger_key: &str) -> usize {
 /// Returns the command and how many tokens were consumed after the
 /// trigger. Unknown consumes everything up to the next trigger so the
 /// words are reported, not dictated.
-fn match_command(after: &[Token], trigger_key: &str) -> (Command, usize) {
+fn match_command(text: &str, after: &[Token], trigger_key: &str) -> (Command, usize) {
     let mut best: Option<(Command, usize)> = None;
     for (phrase, cmd) in GRAMMAR {
         let n = phrase.len();
@@ -328,6 +372,16 @@ fn match_command(after: &[Token], trigger_key: &str) -> (Command, usize) {
         {
             best = Some((cmd.clone(), n));
         }
+    }
+    if let Some((Command::Enhance(_), _)) = best {
+        // Everything up to the next trigger is the instruction, verbatim.
+        let n = next_trigger(after, 0, trigger_key);
+        let payload = if n > 1 {
+            text[after[1].range.start..after[n - 1].range.end].trim()
+        } else {
+            ""
+        };
+        return (Command::Enhance(payload.to_owned()), n);
     }
     best.unwrap_or_else(|| {
         let n = next_trigger(after, 0, trigger_key);
@@ -563,6 +617,40 @@ mod tests {
         assert_eq!(got.commands, vec![Command::NewParagraphBeforeLast]);
         let got = extract("Zevro new line", DEFAULT_TRIGGER);
         assert_eq!(got.commands, vec![Command::Newline], "plain form unchanged");
+    }
+
+    #[test]
+    fn enhance_carries_the_rest_of_the_utterance() {
+        let got = extract("Zevro enhance make it shorter, confirm.", DEFAULT_TRIGGER);
+        assert_eq!(got.dictation, "");
+        assert_eq!(
+            got.commands,
+            vec![Command::Enhance("make it shorter, confirm.".into())]
+        );
+        let got = extract("Fix the bug. Zevro enhance", DEFAULT_TRIGGER);
+        assert_eq!(got.dictation, "Fix the bug.");
+        assert_eq!(got.commands, vec![Command::Enhance(String::new())]);
+        let got = extract("Zevro enhance never mind abort", DEFAULT_TRIGGER);
+        assert_eq!(got.commands, vec![Command::Aborted]);
+    }
+
+    #[test]
+    fn capture_splits_on_confirm_and_abort() {
+        assert_eq!(
+            capture("Turn this into a list."),
+            Capture::Continue("Turn this into a list.".into())
+        );
+        assert_eq!(
+            capture("and keep it short. Confirm."),
+            Capture::Confirm("and keep it short.".into())
+        );
+        assert_eq!(capture("Confirm"), Capture::Confirm(String::new()));
+        assert_eq!(
+            capture("terse, confirm. And more"),
+            Capture::Confirm("terse".into()),
+            "words after confirm are dropped"
+        );
+        assert_eq!(capture("no wait abort"), Capture::Abort);
     }
 
     #[test]

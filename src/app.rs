@@ -541,7 +541,7 @@ impl PromptBoxApp {
         }
         let _ = write!(
             hint,
-            "{trigger} delete sentence. {trigger} DP. {trigger} new paragraph. {trigger} send. {trigger} copy."
+            "{trigger} delete sentence. {trigger} DP. {trigger} new paragraph. {trigger} send. {trigger} copy. {trigger} enhance, confirm."
         );
         hint
     }

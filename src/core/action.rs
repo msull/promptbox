@@ -122,6 +122,30 @@ pub enum AppAction {
     Tick,
 }
 
+/// An AI instruction being spoken. `committed` holds finalized utterances;
+/// `partial` is the current hypothesis, shown but not yet kept.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct InstructionCapture {
+    pub committed: String,
+    pub partial: String,
+}
+
+impl InstructionCapture {
+    /// Committed and provisional text joined for display.
+    #[must_use]
+    pub fn text(&self) -> String {
+        join_spoken(&self.committed, &self.partial)
+    }
+}
+
+fn join_spoken(a: &str, b: &str) -> String {
+    match (a.is_empty(), b.is_empty()) {
+        (true, _) => b.to_owned(),
+        (_, true) => a.to_owned(),
+        _ => format!("{a} {b}"),
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Effect {
     WriteClipboard(String),
@@ -189,6 +213,8 @@ pub struct AppCore {
     stall_flagged: bool,
     trigger: String,
     ai_pending: Option<u64>,
+    /// Voice-dictated AI instruction in progress ("Zevro enhance … confirm").
+    capture: Option<InstructionCapture>,
     ai_prompt_tokens: u64,
     ai_completion_tokens: u64,
     typing: TypingPolicy,
@@ -221,6 +247,7 @@ impl AppCore {
             stall_flagged: false,
             trigger: DEFAULT_TRIGGER.to_owned(),
             ai_pending: None,
+            capture: None,
             ai_prompt_tokens: 0,
             ai_completion_tokens: 0,
             typing: TypingPolicy {
@@ -277,6 +304,12 @@ impl AppCore {
     /// is focused and the user has enabled it.
     pub fn set_typing_policy(&mut self, policy: TypingPolicy) {
         self.typing = policy;
+    }
+
+    /// The AI instruction being dictated, while "Zevro enhance" is active.
+    #[must_use]
+    pub fn instruction_capture(&self) -> Option<&InstructionCapture> {
+        self.capture.as_ref()
     }
 
     /// True while an AI rewrite is in flight.
@@ -360,6 +393,7 @@ impl AppCore {
             }
             AppAction::SessionStopped => {
                 self.active_session = None;
+                self.capture = None;
                 self.doc.commit_provisional();
                 self.mark_dirty(now.mono);
                 self.voice_since = None;
@@ -531,6 +565,10 @@ impl AppCore {
             }
             _ => {}
         }
+        if self.capture.is_some() {
+            self.on_captured_speech(ev, clock, effects);
+            return;
+        }
         // Commands live only in finals; a partial keeps its command words
         // visible (highlighted by the UI) until the Final removes them.
         let mut commands = Vec::new();
@@ -582,6 +620,54 @@ impl AppCore {
         }
     }
 
+    /// While an instruction is being captured, speech goes to the capture
+    /// instead of the document: partials show provisionally, finals are
+    /// kept until "confirm" sends the instruction or "abort" drops it.
+    fn on_captured_speech(&mut self, ev: &SpeechEvent, clock: Clock, effects: &mut Vec<Effect>) {
+        let Some(cap) = self.capture.as_mut() else {
+            return;
+        };
+        match &ev.kind {
+            SpeechEventKind::Partial { text, .. } => {
+                cap.partial.clone_from(text);
+                self.last_progress = Some(clock.mono);
+            }
+            SpeechEventKind::Final { text, .. } => {
+                cap.partial.clear();
+                self.last_progress = Some(clock.mono);
+                self.capture_spoken(text, clock, effects);
+            }
+            _ => {}
+        }
+    }
+
+    /// Feeds finalized words into the capture and acts on confirm / abort.
+    fn capture_spoken(&mut self, text: &str, clock: Clock, effects: &mut Vec<Effect>) {
+        let Some(cap) = self.capture.as_mut() else {
+            return;
+        };
+        match commands::capture(text) {
+            commands::Capture::Continue(t) => cap.committed = join_spoken(&cap.committed, &t),
+            commands::Capture::Abort => {
+                self.capture = None;
+                self.show_toast("Voice: enhance aborted".to_owned(), false, clock.mono);
+            }
+            commands::Capture::Confirm(t) => {
+                let instruction = join_spoken(&cap.committed, &t);
+                self.capture = None;
+                if instruction.is_empty() {
+                    self.show_toast(
+                        "Voice: no instruction to send".to_owned(),
+                        false,
+                        clock.mono,
+                    );
+                } else {
+                    self.begin_rewrite(instruction, clock, effects);
+                }
+            }
+        }
+    }
+
     fn run_command(&mut self, cmd: &Command, clock: Clock, effects: &mut Vec<Effect>) {
         let action = match cmd {
             Command::DeleteSentence => AppAction::DeleteSentence,
@@ -596,6 +682,18 @@ impl AppCore {
             Command::Copy => AppAction::CopyPrompt,
             Command::Send => AppAction::SendPrompt,
             Command::CleanUp => AppAction::AiCleanUp,
+            Command::Enhance(rest) => {
+                self.capture = Some(InstructionCapture::default());
+                self.capture_spoken(rest, clock, effects);
+                if self.capture.is_some() {
+                    self.show_toast(
+                        "Voice: dictate the AI instruction, then say \"confirm\"".to_owned(),
+                        false,
+                        clock.mono,
+                    );
+                }
+                return;
+            }
             Command::StopListening => {
                 effects.push(Effect::StopListening);
                 self.show_toast("Voice: stop listening".to_owned(), false, clock.mono);
@@ -1423,6 +1521,88 @@ mod tests {
             core.toast().is_some(),
             "toast explains there is no previous sentence"
         );
+    }
+
+    fn final_at(core: &mut AppCore, seq: u64, utt: u64, text: &str, at: u64) -> Vec<Effect> {
+        core.dispatch(
+            speech(
+                1,
+                seq,
+                SpeechEventKind::Final {
+                    utterance: utt,
+                    text: text.into(),
+                    confidence: None,
+                },
+            ),
+            Clock::at(at),
+        )
+    }
+
+    #[test]
+    fn enhance_captures_spoken_instruction_until_confirm() {
+        let mut core = AppCore::new();
+        typed(&mut core, "make the tests pass", 0);
+        core.dispatch(AppAction::SessionStarted(1), Clock::at(1));
+        core.dispatch(
+            speech(1, 1, SpeechEventKind::VoiceStarted { utterance: 1 }),
+            Clock::at(2),
+        );
+        final_at(&mut core, 2, 1, "Zevro enhance.", 3);
+        assert!(core.instruction_capture().is_some());
+        assert_eq!(core.doc().committed(), "make the tests pass");
+
+        core.dispatch(
+            speech(1, 3, SpeechEventKind::VoiceStarted { utterance: 2 }),
+            Clock::at(4),
+        );
+        core.dispatch(
+            speech(
+                1,
+                4,
+                SpeechEventKind::Partial {
+                    utterance: 2,
+                    revision: 1,
+                    text: "Turn this".into(),
+                },
+            ),
+            Clock::at(5),
+        );
+        assert_eq!(core.instruction_capture().unwrap().text(), "Turn this");
+        assert_eq!(
+            core.doc().rendered(),
+            "make the tests pass",
+            "captured speech never enters the prompt"
+        );
+        final_at(&mut core, 5, 2, "Turn this into a list.", 6);
+        let effects = final_at(&mut core, 6, 3, "Keep it short. Confirm.", 7);
+        assert!(core.instruction_capture().is_none());
+        match effects.as_slice() {
+            [Effect::AiRewrite(req)] => {
+                assert_eq!(req.instruction, "Turn this into a list. Keep it short.");
+                assert_eq!(req.content, "make the tests pass");
+            }
+            other => panic!("expected one AiRewrite effect, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn enhance_in_one_breath_and_abort() {
+        let mut core = AppCore::new();
+        typed(&mut core, "some prompt", 0);
+        core.dispatch(AppAction::SessionStarted(1), Clock::at(1));
+        let effects = final_at(&mut core, 1, 1, "Zevro enhance make it terse, confirm.", 2);
+        assert!(core.instruction_capture().is_none());
+        assert!(
+            matches!(effects.as_slice(), [Effect::AiRewrite(r)] if r.instruction == "make it terse")
+        );
+
+        final_at(&mut core, 2, 2, "Zevro enhance", 3);
+        final_at(&mut core, 3, 3, "shorten it", 4);
+        assert_eq!(core.instruction_capture().unwrap().committed, "shorten it");
+        let effects = final_at(&mut core, 4, 4, "no, abort", 5);
+        assert!(core.instruction_capture().is_none());
+        assert!(effects.is_empty());
+        assert_eq!(core.doc().committed(), "some prompt");
     }
 
     #[test]
