@@ -1,44 +1,79 @@
 # Prompt Box
 
-A desktop workbench for composing coding-agent prompts by voice, built in Rust
-with [egui](https://docs.rs/egui) / [eframe](https://docs.rs/eframe). Design:
-`voice-prompt-workbench-design.md`. Milestone 0 spike and its findings:
-`spikes/voice-spike/`.
+A desktop workbench for composing coding-agent prompts by voice. Speak, watch
+the words appear, tidy them by hand, by voice command, or with an AI pass,
+then send the prompt to the clipboard and start the next one.
 
-Current state (Milestone 4 plus first AI features): microphone capture through a
-lock-free ring buffer, whisper.cpp (Metal on macOS) with emulated streaming
-partials, dimmed provisional text in the editor, an input level meter,
-stall and audio-gap warnings, Copy and Send through a clipboard port that
-reports failure, sent-prompt history, autosaved draft, undo/redo, delete
-sentence/paragraph, paragraph breaks, voice commands, and toasts.
+Built in Rust with [egui](https://docs.rs/egui) / [eframe](https://docs.rs/eframe)
+and local speech recognition via whisper.cpp. macOS on Apple Silicon is the
+first supported platform. The design is in `voice-prompt-workbench-design.md`;
+the feasibility spike and its measurements are in `spikes/voice-spike/`.
 
-## AI rewrite
+## First run
 
-Two explicit, user-requested transformations of the whole prompt; the AI
-never touches text while you are dictating.
+1. `brew install cmake` (whisper.cpp builds via CMake). Rust 1.95 or newer.
+2. `cargo run --release` (debug builds run whisper far too slowly).
+3. Click **Download base.en (148 MB)** once. The model lands in the data
+   directory listed under [Settings and data](#settings-and-data).
+4. Click **Start listening** or press ⌘L. macOS asks for microphone access the
+   first time; the prompt is attributed to the terminal you launched from.
+5. Speak. Text appears dimmed while provisional and firms up at each pause.
+   ⌘↩ copies the prompt to the clipboard and clears the editor.
 
-- **Clean up** (bottom bar): fixes recognition errors, punctuation, and
-  capitalization and removes filler words and false starts, keeping your
-  wording and order.
-- **AI box** under the prompt: type an instruction ("make it concise",
-  "turn this into a bulleted list"), press ↩ or Ask. The instruction and
-  the full prompt go to the model and the reply replaces the prompt.
+## Using it
 
-Both are one undoable edit (⌘Z restores the original). Requests run on a
-worker thread; the bottom bar shows a spinner while one is in flight, and
-a failure leaves the prompt untouched with an error toast.
+### Editor
 
-The model is `gpt-5.6-luna` via OpenAI chat completions. The key comes
-from, in order: the key saved in **⚙ Settings**, the `OPENAI_API_KEY`
-environment variable, or a `.env` file in the working directory. Settings
-also lets you change the model, the voice trigger word, and the
-appearance (Auto follows the system, or Light / Dark), and shows the
-prompt/completion tokens spent this session (also logged per call).
+The prompt area is an ordinary text box. Type, click, select, and dictate in
+any order; dictation inserts at the cursor and the cursor follows what you
+say. Provisional text (the utterance still being recognized) is dimmed; the
+recognizer may revise earlier words in it until the utterance finalizes.
+
+Copy puts the prompt on the clipboard and keeps it. Send copies and clears,
+but only after both the clipboard write and the history save succeed; if
+either fails the prompt stays and a toast says why. The clear after Send is
+undoable.
+
+### Shortcuts
+
+| Keys | Action |
+|---|---|
+| ⌘L | Start / stop listening |
+| ⌘↩ | Send (copy and clear) |
+| ⌘⇧C | Copy without clearing |
+| ⌘Z / ⌘⇧Z | Undo / redo |
+| ⌘⌫ | Delete last sentence |
+| ⌘⇧⌫ | Delete last paragraph |
+| ⇧↩ | New paragraph |
+| ⌘⇧K | Clear (undoable) |
+
+Undo is one history covering typing, dictation, voice commands, AI rewrites,
+and Send. "Last sentence" means the sentence ending at or containing the
+cursor, which right after dictation is what you just said.
+
+### Status line
+
+○ Idle · ● Listening · ◐ Finishing (stop requested, last words still
+arriving) · ▲ Degraded · ✖ Error.
+
+Degraded means an audio gap was detected or the recognizer made no progress
+during four seconds of continuous voice; it stays until dismissed or until
+transcription resumes. The bar meter next to the status is raw microphone
+level, independent of recognition: a flat meter means capture is the
+problem, a moving meter with no text means recognition is.
+
+### Window
+
+📌 pins the window above others. **Dock** shrinks it to 300×330 and moves
+it to the next screen corner on each click (top-right, bottom-right,
+bottom-left, top-left). Below about 460 px wide the top bar hides the
+project picker and Debug menu so the window can sit small in a corner.
 
 ## Voice commands
 
-Say the trigger word **Zevro** followed by a command, in the same breath or
-its own: "…move it into the service layer. Zevro delete sentence."
+Say the trigger word **Zevro** followed by a command, at the end of a
+sentence or on its own: "…move it into the service layer. Zevro delete
+sentence." The **Commands** button shows this list in the app.
 
 | Say | Does |
 |---|---|
@@ -54,103 +89,120 @@ its own: "…move it into the service layer. Zevro delete sentence."
 
 Commands are extracted only from finalized utterances, so each runs exactly
 once. While you are still speaking, the command words show in amber inside
-the dimmed provisional text and disappear when the utterance finalizes.
-Real microphones render the trigger many ways ("Zebro", "Zebra", "Zev
-Bro", "zebbro"), so it is matched on a consonant skeleton (b/v merged,
-vowels dropped), optionally across two words; "zero" never matches.
-Command words tolerate a one-letter slip ("sand" counts as "send"). An
-utterance that starts with the trigger is treated as a command only, so a
-garbled tail after the command is ignored. Anything after the trigger
-that matches nothing is dropped and reported in a toast, never typed into
-the prompt. Example command phrases are added to whisper's prompt so the
-trigger and grammar are recognized reliably.
+the provisional text and disappear when the utterance finalizes.
 
-To use a different trigger word, set `"trigger": "yourword"` in
-`settings.json` (see data directory below) and restart.
+Recognition of the trigger is deliberately loose. Real microphones render it
+as "Zebro", "Zebra", "Zev Bro", or "zebbro", so it is matched on a consonant
+skeleton (b/v merged, vowels dropped), optionally across two words; "zero"
+never matches. Command words tolerate a one-letter slip ("sand" counts as
+"send"). An utterance that starts with the trigger is a command only, so a
+garbled tail after the command is ignored. Anything after the trigger that
+matches nothing is dropped and reported in a toast, never typed into the
+prompt. Example command phrases are added to whisper's prompt so the trigger
+and grammar are recognized reliably. The trigger word can be changed in
+Settings.
 
-## First run
+## AI rewrite
 
-1. `brew install cmake` (whisper.cpp builds via CMake).
-2. `cargo run --release` (debug builds run whisper far too slowly).
-3. Click **Download base.en (148 MB)** once; it lands in the data dir below.
-4. Click **Start listening** (or ⌘L). macOS asks for microphone access the
-   first time; the prompt is attributed to the terminal you launched from.
-5. Speak. Provisional text appears dimmed and firms up at each pause.
-   ⌘↩ copies the prompt and clears the editor.
+Two explicit, user-requested transformations of the whole prompt. The AI
+never touches text while you are dictating.
 
-Dev aids: `PROMPTBOX_AUTOSTART=1` starts listening at launch, and
-`PROMPTBOX_FAKE_MIC=/path/to/16k-mono.wav` feeds a WAV through the real
-capture path instead of the microphone (the spike's fixtures work). The
-**Debug** menu runs scripted dictation without any model.
+- **Clean up** (bottom bar) fixes recognition errors, punctuation, and
+  capitalization and removes filler words and false starts, keeping your
+  wording and order.
+- The **AI box** under the prompt takes an instruction ("make it concise",
+  "turn this into a bulleted list"). Press ↩ or Ask; the instruction and the
+  full prompt go to the model and the reply replaces the prompt.
 
-Requires Rust 1.95 or newer.
+Both are one undoable edit. Requests run on a worker thread with a spinner
+in the bottom bar; a failure leaves the prompt untouched and shows the error.
 
-## Commands
+The model is `gpt-5.6-luna` via OpenAI chat completions. The API key comes
+from, in order: the key saved in Settings, the `OPENAI_API_KEY` environment
+variable, or a `.env` file in the working directory. Token usage is logged
+per call and totalled in Settings.
+
+## Settings and data
+
+⚙ in the top bar opens Settings: OpenAI API key (stored masked), model,
+voice trigger word, and appearance (Auto follows the system, or Light /
+Dark). Save persists them.
+
+Everything lives in the platform data directory, `~/Library/Application
+Support/promptbox` on macOS:
+
+| File | Contents |
+|---|---|
+| `settings.json` | the Settings window, plus pin state |
+| `draft.txt` | autosaved current prompt, 500 ms after each change |
+| `history.json` | last 50 sent prompts |
+| `models/ggml-base.en.bin` | the speech model |
+
+## Development
 
 ```sh
-cargo run --locked                                   # launch the app
+cargo run --locked --release                         # launch the app
 cargo test --locked                                  # unit tests + headless UI tests
 cargo clippy --locked --all-targets -- -D warnings   # lint
 cargo fmt --all                                      # format
 ```
 
-## Layout
+Dev aids: `PROMPTBOX_AUTOSTART=1` starts listening at launch;
+`PROMPTBOX_FAKE_MIC=/path/to/16k-mono.wav` feeds a WAV through the real
+capture path instead of the microphone (the spike's fixtures work); the
+**Debug** menu runs scripted dictation without any model.
+
+### Layout
 
 ```
-src/main.rs            thin launcher
-src/lib.rs             module tree
-src/core/              deterministic, egui-free
-  action.rs            AppAction, Effect, AppCore::dispatch (the state machine)
-  document.rs          committed text + one provisional span + edit history
-  project.rs           placeholder projects
-src/ports/             traits the core needs: speech events/engine, clipboard, history
+src/main.rs              thin launcher
+src/lib.rs               module tree
+src/core/                deterministic, egui-free
+  action.rs              AppAction, Effect, AppCore::dispatch (the state machine)
+  document.rs            committed text + one provisional span + edit history
+  commands.rs            voice-command grammar and extraction
+  text.rs                sentence / paragraph ranges for delete operations
+  project.rs             placeholder projects
+src/ports/               traits the core needs
+  speech.rs, engine.rs   speech events and the speech-engine boundary
+  clipboard.rs           clipboard that reports failure
+  history.rs             sent prompts, draft, settings
+  ai.rs                  prompt rewriter
 src/adapters/
-  audio.rs             cpal capture -> ring buffer -> resample -> 20 ms chunks
-  speech/              whisper.cpp engine: VAD, worker per session, partials
-  model.rs             model path and background download
+  audio.rs               cpal capture -> ring buffer -> resample -> 20 ms chunks
+  speech/                whisper.cpp engine: VAD, worker per session, partials
+  model.rs               model path and background download
+  openai.rs              chat-completions rewriter, .env reader
   clipboard.rs, persistence.rs, fake_speech.rs
-src/app.rs             PromptBoxApp: owns core + adapters + recognizer + mic; runs effects
-src/ui.rs              egui drawing and input -> actions (edit diffing, shortcuts)
-tests/ui.rs            headless flows via egui_kittest with fake adapters
+src/app.rs               PromptBoxApp: owns core + adapters + recognizer + mic; runs effects
+src/ui.rs                egui drawing and input -> actions (edit diffing, shortcuts)
+tests/ui.rs              headless flows via egui_kittest with fake adapters
+tests/whisper.rs         real engine over a spike fixture (ignored by default)
+tests/openai_live.rs     real OpenAI call (ignored by default)
 ```
 
-Data lives in the platform data dir (`~/Library/Application Support/promptbox`
-on macOS): `history.json` (last 50 sent prompts), `draft.txt` (autosaved
-every 500 ms after a change), and `models/ggml-base.en.bin`.
+### Testing approach
 
-Shortcuts: ⌘L start/stop listening, ⌘↩ Send (copy and clear), ⌘⇧C Copy,
-⌘Z / ⌘⇧Z undo and redo (one history covering typing, dictation, and
-Send), ⌘⌫ delete last sentence, ⌘⇧⌫ delete last paragraph, ⇧↩ new
-paragraph, ⌘⇧K clear. "Last" means the unit ending at or containing the
-cursor, which after dictation is what was just said.
-The 📌 button pins the window above others (remembered in `settings.json`).
-**Dock** shrinks the window to 300×330 and moves it to the next screen
-corner on each click (top-right, bottom-right, bottom-left, top-left).
-Below about 460 px wide the top bar hides the project picker and Debug menu
-so the window can sit small in a corner.
+Everything enters `AppCore::dispatch(action, clock)` and leaves as effects,
+so core tests are plain state-transition tests with an explicit clock and
+no sleeping. Adapters have their own tests; the file store uses a temp
+directory. UI tests run the real `eframe::App` headlessly with fake
+clipboard, history, and rewriter, find widgets by label, and advance frames
+with `harness.run_steps(2)`: one frame to process the click, one to render
+its result.
 
-Status line: ○ Idle, ● Listening, ◐ Finishing (stop requested, last words
-still arriving), ▲ Degraded (audio gap or no transcript progress for 4 s of
-continuous voice; sticky until dismissed or recovered), ✖ Error. The bar
-meter next to it is raw microphone level, independent of recognition, so a
-flat meter means capture is the problem and a moving meter with no text
-means recognition is.
+Ignored tests hit real services:
 
-## Testing approach
+```sh
+cargo test --release --test whisper -- --ignored       # needs the model and spike fixtures
+cargo test --test openai_live -- --ignored --nocapture # spends a few hundred tokens
+```
 
-Everything enters `AppCore::dispatch(action, clock)` and leaves as effects, so
-core tests are plain state-transition tests with an explicit clock (no
-sleeping). Adapters have their own tests (file store uses a temp dir). UI
-tests run the real `eframe::App` headlessly with fake clipboard/history,
-find widgets by label, and advance frames with `harness.run_steps(2)` (one
-frame to process the click, one to render its result).
+### Pre-commit hook
 
-`cargo test --release --test whisper -- --ignored` runs the real engine over
-a spike fixture (needs the model and `spikes/voice-spike` fixtures).
-
-## Pre-commit hook
-
-`.githooks/pre-commit` checks formatting, runs Clippy, and runs the tests before each commit. It never modifies or stages files. Enable it once per clone:
+`.githooks/pre-commit` checks formatting, runs Clippy, and runs the tests
+before each commit. It never modifies or stages files. Enable it once per
+clone:
 
 ```sh
 git config core.hooksPath .githooks
