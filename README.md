@@ -125,8 +125,8 @@ per call and totalled in Settings.
 ## Settings and data
 
 ⚙ in the top bar opens Settings: OpenAI API key (stored masked), model,
-voice trigger word, and appearance (Auto follows the system, or Light /
-Dark). Save persists them.
+and voice trigger word, which Save persists, and appearance (Auto follows
+the system, or Light / Dark), which persists as soon as it is clicked.
 
 Everything lives in the platform data directory, `~/Library/Application
 Support/promptbox` on macOS:

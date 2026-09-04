@@ -313,19 +313,42 @@ fn settings_window_saves_api_key_and_enables_ai() {
 }
 
 #[test]
-fn settings_theme_toggle_persists_after_save() {
+fn settings_theme_toggle_applies_and_persists_immediately() {
     use promptbox::ports::history::ThemeChoice;
     let mut harness = harness();
     harness.get_by_label("⚙").click();
     harness.run_steps(2);
     harness.get_by_label("Dark").click();
     harness.run_steps(2);
-    assert_eq!(harness.state().settings_draft.theme, ThemeChoice::Dark);
-    assert_eq!(harness.state().theme(), ThemeChoice::Auto, "not saved yet");
-    harness.get_by_label("Save").click();
+    assert_eq!(harness.state().theme(), ThemeChoice::Dark, "no Save needed");
+    assert_eq!(harness.ctx.theme(), egui::Theme::Dark);
+}
+
+#[test]
+fn saved_theme_is_applied_at_launch() {
+    use promptbox::ports::history::{Settings, ThemeChoice};
+    let store = MemoryStore {
+        settings: Settings {
+            theme: ThemeChoice::Dark,
+            ..Settings::default()
+        },
+        ..Default::default()
+    };
+    let mut harness = harness_with(FakeClipboard::default(), store);
     harness.run_steps(2);
     assert_eq!(harness.state().theme(), ThemeChoice::Dark);
     assert_eq!(harness.ctx.theme(), egui::Theme::Dark);
+    // And the light override wins over a dark system too.
+    let store = MemoryStore {
+        settings: Settings {
+            theme: ThemeChoice::Light,
+            ..Settings::default()
+        },
+        ..Default::default()
+    };
+    let mut harness = harness_with(FakeClipboard::default(), store);
+    harness.run_steps(2);
+    assert_eq!(harness.ctx.theme(), egui::Theme::Light);
 }
 
 #[test]

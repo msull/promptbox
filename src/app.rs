@@ -275,6 +275,17 @@ impl PromptBoxApp {
         self.settings.theme
     }
 
+    /// Applies and persists the appearance immediately; unlike the API key
+    /// or model there is nothing to validate, so no Save step is needed.
+    pub fn set_theme(&mut self, ctx: &egui::Context, theme: ThemeChoice) {
+        self.settings.theme = theme;
+        self.settings_draft.theme = theme;
+        Self::apply_theme(ctx, theme);
+        if let Err(e) = self.history.save_settings(&self.settings) {
+            log::warn!("could not save settings: {e}");
+        }
+    }
+
     /// Saves the settings-window draft and reapplies anything it affects.
     pub fn save_settings_draft(&mut self) {
         self.settings = self.settings_draft.clone();

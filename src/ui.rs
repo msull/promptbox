@@ -108,17 +108,16 @@ fn settings_window(app: &mut PromptBoxApp, ui: &mut Ui) {
                     ui.end_row();
                     ui.label("Appearance");
                     ui.horizontal(|ui| {
-                        let before = app.settings_draft.theme;
-                        for (choice, label) in [
+                        let mut choice = app.theme();
+                        for (value, label) in [
                             (ThemeChoice::Auto, "Auto"),
                             (ThemeChoice::Light, "Light"),
                             (ThemeChoice::Dark, "Dark"),
                         ] {
-                            ui.selectable_value(&mut app.settings_draft.theme, choice, label);
+                            ui.selectable_value(&mut choice, value, label);
                         }
-                        if app.settings_draft.theme != before {
-                            // Preview immediately; Save makes it stick.
-                            PromptBoxApp::apply_theme(ui.ctx(), app.settings_draft.theme);
+                        if choice != app.theme() {
+                            app.set_theme(ui.ctx(), choice);
                         }
                     });
                     ui.end_row();
