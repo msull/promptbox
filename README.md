@@ -96,7 +96,8 @@ sentence." The **Commands** button shows this list in the app.
 | Zevro delete sentence / scratch that | Delete last sentence |
 | Zevro delete paragraph / DP | Delete last paragraph |
 | Zevro undo / redo | Undo / redo |
-| Zevro new line / new paragraph | Line break / paragraph break |
+| Zevro new line / new paragraph | Line break / paragraph break at the cursor |
+| Zevro new line last / new paragraph last | Move the last sentence to its own line / paragraph |
 | Zevro clear | Clear (undoable) |
 | Zevro copy | Copy without clearing |
 | Zevro send | Copy and clear |

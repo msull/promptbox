@@ -31,6 +31,10 @@ pub enum Command {
     Redo,
     Newline,
     NewParagraph,
+    /// "new line last": break the line just before the last sentence.
+    NewlineBeforeLast,
+    /// "new paragraph last": start a paragraph at the last sentence.
+    NewParagraphBeforeLast,
     Clear,
     Copy,
     Send,
@@ -54,6 +58,8 @@ impl Command {
             Self::Redo => "Redo",
             Self::Newline => "Insert a line break",
             Self::NewParagraph => "Start a new paragraph",
+            Self::NewlineBeforeLast => "Move the last sentence to its own line",
+            Self::NewParagraphBeforeLast => "Move the last sentence to a new paragraph",
             Self::Clear => "Clear the prompt (undoable)",
             Self::Copy => "Copy to the clipboard, keep the text",
             Self::Send => "Copy to the clipboard and clear",
@@ -73,6 +79,8 @@ impl Command {
             Self::Redo => "redo".into(),
             Self::Newline => "new line".into(),
             Self::NewParagraph => "new paragraph".into(),
+            Self::NewlineBeforeLast => "new line last".into(),
+            Self::NewParagraphBeforeLast => "new paragraph last".into(),
             Self::Clear => "clear".into(),
             Self::Copy => "copy".into(),
             Self::Send => "send".into(),
@@ -100,6 +108,14 @@ const GRAMMAR: &[(&[&str], Command)] = &[
     (&["new", "line"], Command::Newline),
     (&["newline"], Command::Newline),
     (&["new", "paragraph"], Command::NewParagraph),
+    // "... last" puts the break before the last sentence instead of at
+    // the cursor. Longest match wins, so these beat the plain forms.
+    (&["new", "line", "last"], Command::NewlineBeforeLast),
+    (&["newline", "last"], Command::NewlineBeforeLast),
+    (
+        &["new", "paragraph", "last"],
+        Command::NewParagraphBeforeLast,
+    ),
     (&["clear", "all"], Command::Clear),
     (&["clear"], Command::Clear),
     (&["copy"], Command::Copy),
@@ -536,6 +552,17 @@ mod tests {
         }
         let got = extract("Zevro DP", DEFAULT_TRIGGER);
         assert_eq!(got.commands, vec![Command::DeleteParagraph]);
+    }
+
+    #[test]
+    fn last_suffix_selects_the_before_last_sentence_variants() {
+        let got = extract("Fix it. Zevro new line last", DEFAULT_TRIGGER);
+        assert_eq!(got.dictation, "Fix it.");
+        assert_eq!(got.commands, vec![Command::NewlineBeforeLast]);
+        let got = extract("Zevro new paragraph last.", DEFAULT_TRIGGER);
+        assert_eq!(got.commands, vec![Command::NewParagraphBeforeLast]);
+        let got = extract("Zevro new line", DEFAULT_TRIGGER);
+        assert_eq!(got.commands, vec![Command::Newline], "plain form unchanged");
     }
 
     #[test]

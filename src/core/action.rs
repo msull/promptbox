@@ -102,8 +102,12 @@ pub enum AppAction {
     DeleteParagraph,
     /// Inserts a line break at the cursor.
     Newline,
+    /// Line break just before the last sentence; cursor stays put.
+    NewlineBeforeLastSentence,
     /// Starts a new paragraph at the cursor (one blank line).
     NewParagraph,
+    /// Paragraph break just before the last sentence; cursor stays put.
+    NewParagraphBeforeLastSentence,
     SelectProject(usize),
     /// Ask the AI to transform the whole prompt with this instruction.
     AiRewrite {
@@ -456,6 +460,12 @@ impl AppCore {
                 self.delete_unit(last_paragraph_range, "No paragraph to delete", now.mono);
             }
             AppAction::Newline => self.insert_at_cursor("\n", now.mono),
+            AppAction::NewlineBeforeLastSentence => {
+                self.break_before_last_sentence("\n", now.mono);
+            }
+            AppAction::NewParagraphBeforeLastSentence => {
+                self.break_before_last_sentence("\n\n", now.mono);
+            }
             AppAction::NewParagraph => {
                 self.doc.commit_provisional();
                 let text = paragraph_break_for(self.doc.committed(), self.doc.cursor());
@@ -580,6 +590,8 @@ impl AppCore {
             Command::Redo => AppAction::Redo,
             Command::Newline => AppAction::Newline,
             Command::NewParagraph => AppAction::NewParagraph,
+            Command::NewlineBeforeLast => AppAction::NewlineBeforeLastSentence,
+            Command::NewParagraphBeforeLast => AppAction::NewParagraphBeforeLastSentence,
             Command::Clear => AppAction::ClearPrompt,
             Command::Copy => AppAction::CopyPrompt,
             Command::Send => AppAction::SendPrompt,
@@ -661,6 +673,38 @@ impl AppCore {
             .apply_manual_edit(range, "", OverlapPolicy::CommitProvisional)
             .is_ok()
         {
+            self.mark_dirty(now);
+        }
+    }
+
+    /// Replaces the whitespace between the previous sentence and the last
+    /// one with `brk`, so the last sentence starts a new line or paragraph.
+    /// The cursor keeps its place in the text so dictation continues at the
+    /// end of the sentence, not in front of it.
+    fn break_before_last_sentence(&mut self, brk: &str, now: Duration) {
+        self.doc.commit_provisional();
+        let cursor = self.doc.cursor();
+        let text = self.doc.committed();
+        let Some(range) = last_sentence_range(text, cursor) else {
+            self.show_toast("No sentence to move".to_owned(), false, now);
+            return;
+        };
+        if range.start == 0 {
+            self.show_toast("No previous sentence".to_owned(), false, now);
+            return;
+        }
+        let ws_end =
+            range.start + text[range.start..].len() - text[range.start..].trim_start().len();
+        if &text[range.start..ws_end] == brk {
+            return;
+        }
+        let ws_len = ws_end - range.start;
+        if self
+            .doc
+            .apply_manual_edit(range.start..ws_end, brk, OverlapPolicy::CommitProvisional)
+            .is_ok()
+        {
+            self.doc.set_cursor(cursor + brk.len() - ws_len);
             self.mark_dirty(now);
         }
     }
@@ -1348,6 +1392,37 @@ mod tests {
         assert_eq!(core.doc().committed(), "Para one.");
         core.dispatch(AppAction::Undo, Clock::at(7));
         assert_eq!(core.doc().committed(), "Para one.\n\nPara two.\nsame para");
+    }
+
+    #[test]
+    fn breaks_before_the_last_sentence_keep_the_cursor_in_place() {
+        let mut core = AppCore::new();
+        typed(&mut core, "One. Two.", 0);
+        core.dispatch(AppAction::NewlineBeforeLastSentence, Clock::at(1));
+        assert_eq!(core.doc().committed(), "One.\nTwo.");
+        assert_eq!(core.doc().cursor(), "One.\nTwo.".len());
+        core.dispatch(AppAction::NewParagraphBeforeLastSentence, Clock::at(2));
+        assert_eq!(core.doc().committed(), "One.\n\nTwo.");
+        assert_eq!(core.doc().cursor(), "One.\n\nTwo.".len());
+        core.dispatch(AppAction::NewParagraphBeforeLastSentence, Clock::at(3));
+        assert_eq!(
+            core.doc().committed(),
+            "One.\n\nTwo.",
+            "already a paragraph"
+        );
+        core.dispatch(AppAction::Undo, Clock::at(4));
+        assert_eq!(core.doc().committed(), "One.\nTwo.");
+        core.dispatch(AppAction::Undo, Clock::at(5));
+        assert_eq!(core.doc().committed(), "One. Two.");
+
+        let mut core = AppCore::new();
+        typed(&mut core, "Only one.", 0);
+        core.dispatch(AppAction::NewlineBeforeLastSentence, Clock::at(1));
+        assert_eq!(core.doc().committed(), "Only one.");
+        assert!(
+            core.toast().is_some(),
+            "toast explains there is no previous sentence"
+        );
     }
 
     #[test]
