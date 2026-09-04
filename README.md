@@ -238,6 +238,12 @@ cargo clippy --locked --all-targets -- -D warnings   # lint
 cargo fmt --all                                      # format
 ```
 
+`scripts/bundle.sh` builds a release binary, wraps it as `Prompt Box.app` in
+`~/Applications` (pass another directory to override), and ad-hoc signs it
+so Spotlight and Launchpad find it and the microphone / Accessibility
+grants stick to the app. A bundled app starts with `/` as its working
+directory, so it reads the API key from Settings rather than a `.env`.
+
 Dev aids: `PROMPTBOX_AUTOSTART=1` starts listening at launch;
 `PROMPTBOX_FAKE_MIC=/path/to/16k-mono.wav` feeds a WAV through the real
 capture path instead of the microphone (the spike's fixtures work); the
