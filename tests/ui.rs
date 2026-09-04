@@ -364,6 +364,67 @@ fn enhance_dictates_into_the_ai_bar_and_confirm_sends_it() {
 }
 
 #[test]
+fn project_editor_saves_persists_and_corrects_dictation() {
+    use promptbox::core::AppAction;
+    use promptbox::ports::speech::{SpeechEvent, SpeechEventKind};
+    let mut harness = harness();
+    harness.get_by_label("✎").click();
+    harness.run_steps(4);
+    harness.get_by_label("New").click();
+    harness.run_steps(4);
+    let name = harness.get_by_role_and_label(Role::TextInput, "Name");
+    name.focus();
+    name.type_text("Acme");
+    harness.run_steps(2);
+    let corrections = harness.get_by_role_and_label(Role::MultilineTextInput, "Corrections");
+    corrections.focus();
+    corrections.type_text("you never sheets => Univer Sheets");
+    harness.run_steps(2);
+    harness.get_by_label("Save").click();
+    harness.run_steps(4);
+    assert!(harness.state().project_editor.is_none());
+    assert_eq!(harness.state().core().project().name, "Acme");
+    assert_eq!(harness.state().settings().project, "Acme");
+    let saved = harness.state().core().projects();
+    assert_eq!(saved.len(), 2);
+    assert_eq!(saved[1].corrections[0].to, "Univer Sheets");
+
+    harness.state_mut().dispatch(AppAction::SessionStarted(1));
+    harness
+        .state_mut()
+        .dispatch(AppAction::SpeechEventReceived(SpeechEvent {
+            session: 1,
+            sequence: 1,
+            audio_range: 0..0,
+            kind: SpeechEventKind::Final {
+                utterance: 1,
+                text: "open you never sheets".into(),
+                confidence: None,
+            },
+        }));
+    harness.run_steps(2);
+    assert_eq!(
+        harness.state().core().doc().committed(),
+        "open Univer Sheets"
+    );
+}
+
+#[test]
+fn saved_projects_and_selection_are_restored_at_launch() {
+    let mut store = MemoryStore::default();
+    let mut acme = promptbox::core::Project::new("Acme");
+    acme.vocabulary = vec!["Pydantic".into()];
+    store.projects = vec![promptbox::core::Project::new("Default"), acme];
+    store.settings.project = "Acme".into();
+    let harness = harness_with(FakeClipboard::default(), store);
+    assert_eq!(harness.state().core().project().name, "Acme");
+    assert_eq!(
+        harness.state().core().project().vocabulary,
+        vec!["Pydantic"]
+    );
+}
+
+#[test]
 fn settings_window_saves_api_key_and_enables_ai() {
     let mut harness = harness();
     harness.get_by_label("⚙").click();

@@ -40,6 +40,133 @@ pub fn draw(app: &mut PromptBoxApp, ui: &mut Ui) {
     egui::CentralPanel::default().show(ui, |ui| editor(app, ui));
     commands_popup(app, ui);
     settings_window(app, ui);
+    projects_window(app, ui);
+}
+
+/// Editor for the project list. Everything is plain text, one entry per
+/// line, and nothing is applied until Save.
+fn projects_window(app: &mut PromptBoxApp, ui: &mut Ui) {
+    if app.project_editor.is_none() {
+        return;
+    }
+    let mut open = true;
+    let mut action = None;
+    egui::Window::new("Projects")
+        .open(&mut open)
+        .collapsible(false)
+        .default_width(520.0)
+        .show(ui.ctx(), |ui| {
+            let Some(editor) = app.project_editor.as_mut() else {
+                return;
+            };
+            ui.horizontal(|ui| {
+                ui.vertical(|ui| {
+                    ui.set_width(140.0);
+                    for i in 0..editor.drafts.len() {
+                        let name = editor.drafts[i].name.trim();
+                        let label = if name.is_empty() { "(unnamed)" } else { name };
+                        if ui.selectable_label(editor.selected == i, label).clicked() {
+                            editor.selected = i;
+                        }
+                    }
+                    ui.add_space(6.0);
+                    ui.horizontal(|ui| {
+                        if ui.button("New").clicked() {
+                            editor.add();
+                        }
+                        if ui
+                            .add_enabled(editor.drafts.len() > 1, egui::Button::new("Delete"))
+                            .clicked()
+                        {
+                            editor.remove_selected();
+                        }
+                    });
+                });
+                ui.separator();
+                project_form(ui, &mut editor.drafts[editor.selected]);
+            });
+            if let Some(err) = &editor.error {
+                ui.colored_label(egui::Color32::from_rgb(0xd0, 0x40, 0x40), err);
+            }
+            ui.add_space(6.0);
+            ui.horizontal(|ui| {
+                if ui.button("Save").clicked() {
+                    action = Some(true);
+                }
+                if ui.button("Cancel").clicked() {
+                    action = Some(false);
+                }
+            });
+        });
+    match action {
+        Some(true) => {
+            app.save_project_editor();
+        }
+        Some(false) => app.project_editor = None,
+        None => {}
+    }
+    if !open {
+        app.project_editor = None;
+    }
+}
+
+/// The fields of one project in the editor.
+fn project_form(ui: &mut Ui, draft: &mut crate::app::ProjectDraft) {
+    ui.vertical(|ui| {
+        ui.set_width(340.0);
+        ui.horizontal(|ui| {
+            let label = ui.label("Name");
+            ui.add(
+                TextEdit::singleline(&mut draft.name)
+                    .id(egui::Id::new("project-name"))
+                    .desired_width(f32::INFINITY),
+            )
+            .labelled_by(label.id);
+        });
+        field(
+            ui,
+            "Vocabulary",
+            "Names the recognizer should expect, one per line.",
+            &mut draft.vocabulary,
+            "project-vocabulary",
+        );
+        field(
+            ui,
+            "Corrections",
+            "heard words => Written Form, one per line. \
+             Applied to new dictation, whole words, any case.",
+            &mut draft.corrections,
+            "project-corrections",
+        );
+        field(
+            ui,
+            "Glossary",
+            "Term: what it means, one per line. Given to the AI.",
+            &mut draft.glossary,
+            "project-glossary",
+        );
+        field(
+            ui,
+            "AI context",
+            "What the project is, conventions, what rewrites must keep.",
+            &mut draft.context,
+            "project-context",
+        );
+    });
+}
+
+/// A labelled multi-line box in the project editor.
+fn field(ui: &mut Ui, label: &str, help: &str, text: &mut String, id: &str) {
+    ui.add_space(4.0);
+    let heading = ui.label(label).on_hover_text(help);
+    ui.add(
+        TextEdit::multiline(text)
+            .id(egui::Id::new(id))
+            .hint_text(help)
+            .desired_rows(3)
+            .desired_width(f32::INFINITY),
+    )
+    .labelled_by(heading.id);
 }
 
 /// Instruction box under the prompt: whatever is typed here is sent to the
@@ -165,6 +292,7 @@ fn settings_window(app: &mut PromptBoxApp, ui: &mut Ui) {
     }
     let mut open = true;
     let mut save = false;
+    let mut open_projects = false;
     egui::Window::new("Settings")
         .open(&mut open)
         .collapsible(false)
@@ -231,12 +359,20 @@ fn settings_window(app: &mut PromptBoxApp, ui: &mut Ui) {
                 .small(),
             );
             ui.add_space(6.0);
-            if ui.button("Save").clicked() {
-                save = true;
-            }
+            ui.horizontal(|ui| {
+                if ui.button("Save").clicked() {
+                    save = true;
+                }
+                if ui.button("Projects…").clicked() {
+                    open_projects = true;
+                }
+            });
         });
     if save {
         app.save_settings_draft();
+    }
+    if open_projects {
+        app.open_project_editor();
     }
     app.show_settings = open;
 }
@@ -371,6 +507,17 @@ fn top_bar(app: &mut PromptBoxApp, ui: &mut Ui) {
                 });
             if choice != selected {
                 app.dispatch(AppAction::SelectProject(choice));
+            }
+            if ui
+                .selectable_label(app.project_editor.is_some(), "✎")
+                .on_hover_text("Edit projects: vocabulary, corrections, glossary, AI context")
+                .clicked()
+            {
+                if app.project_editor.is_some() {
+                    app.project_editor = None;
+                } else {
+                    app.open_project_editor();
+                }
             }
         }
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {

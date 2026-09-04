@@ -64,10 +64,19 @@ impl Rewriter for OpenAiRewriter {
             request.instruction.trim(),
             request.content
         );
+        let system = if request.context.trim().is_empty() {
+            SYSTEM_PROMPT.to_owned()
+        } else {
+            format!(
+                "{SYSTEM_PROMPT}\n\nAbout the project the text is for (use it to resolve \
+                 misheard names and technical terms):\n{}",
+                request.context.trim()
+            )
+        };
         let body = serde_json::json!({
             "model": self.model,
             "messages": [
-                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "system", "content": system},
                 {"role": "user", "content": user},
             ],
         });

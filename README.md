@@ -121,6 +121,25 @@ prompt. Example command phrases are added to whisper's prompt so the trigger
 and grammar are recognized reliably. The trigger word can be changed in
 Settings.
 
+## Projects
+
+The **Project** picker in the top bar chooses the context for what you are
+dictating; ✎ next to it (or **Projects…** in Settings when the window is
+narrow) opens the editor. Each project has, one entry per line:
+
+- **Vocabulary**: names and jargon the recognizer is primed with.
+- **Corrections**: `heard words => Written Form`. Applied in order to every
+  newly finalized utterance, matching whole words in any case with any
+  separators between them ("you never sheets", "You Never, Sheets" →
+  "Univer Sheets"). Text already in the editor is never touched again, so
+  a rule cannot fight your manual edits.
+- **Glossary**: `Term: what it means`, given to the AI with every rewrite.
+- **AI context**: freeform notes on the project and what rewrites must keep.
+
+Glossary terms and correction targets are also fed to the recognizer.
+Projects are saved to `projects.json`; the selected project is remembered
+across restarts and recorded with each sent prompt.
+
 ## AI rewrite
 
 Two explicit, user-requested transformations of the whole prompt. The AI
@@ -142,6 +161,9 @@ never touches text while you are dictating.
 Both are one undoable edit. Requests run on a worker thread with a spinner
 in the bottom bar; a failure leaves the prompt untouched and shows the error.
 
+The current project's glossary, context, and vocabulary go to the model
+with every request, so it can resolve misheard project names.
+
 The model is `gpt-5.6-luna` via OpenAI chat completions. The API key comes
 from, in order: the key saved in Settings, the `OPENAI_API_KEY` environment
 variable, or a `.env` file in the working directory. Token usage is logged
@@ -162,6 +184,7 @@ Support/promptbox` on macOS:
 | `settings.json` | the Settings window, plus pin state |
 | `draft.txt` | autosaved current prompt, 500 ms after each change |
 | `history.json` | last 50 sent prompts |
+| `projects.json` | projects: vocabulary, corrections, glossary, AI context |
 | `models/ggml-base.en.bin` | the speech model |
 
 ## Development
@@ -188,11 +211,11 @@ src/core/                deterministic, egui-free
   document.rs            committed text + one provisional span + edit history
   commands.rs            voice-command grammar and extraction
   text.rs                sentence / paragraph ranges for delete operations
-  project.rs             placeholder projects
+  project.rs             projects: correction rules, recognizer terms, AI context
 src/ports/               traits the core needs
   speech.rs, engine.rs   speech events and the speech-engine boundary
   clipboard.rs           clipboard that reports failure
-  history.rs             sent prompts, draft, settings
+  history.rs             sent prompts, draft, settings, projects
   ai.rs                  prompt rewriter
   typist.rs              keyboard injection into the focused app
 src/adapters/

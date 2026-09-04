@@ -10,4 +10,4 @@ pub mod text;
 pub use action::{AppAction, AppCore, Clock, Effect, InstructionCapture, SessionStatus, Toast};
 pub use commands::Command;
 pub use document::{Document, OverlapPolicy};
-pub use project::Project;
+pub use project::{Correction, GlossaryEntry, Project};

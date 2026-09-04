@@ -10,7 +10,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use crate::core::commands::{self, Command, DEFAULT_TRIGGER};
 use crate::core::document::{Document, EditSource, OverlapPolicy};
-use crate::core::project::{Project, placeholder_projects};
+use crate::core::project::{Project, default_projects};
 use crate::core::text::{last_paragraph_range, last_sentence_range, paragraph_break_for};
 use crate::ports::ai::{CLEAN_UP_INSTRUCTION, RewriteRequest, RewriteResponse};
 use crate::ports::history::SentPrompt;
@@ -109,6 +109,11 @@ pub enum AppAction {
     /// Paragraph break just before the last sentence; cursor stays put.
     NewParagraphBeforeLastSentence,
     SelectProject(usize),
+    /// The persisted project list arrived (empty when none was saved).
+    ProjectsLoaded(Result<Vec<Project>, String>),
+    /// The project editor was saved: replace the list and persist it.
+    ReplaceProjects(Vec<Project>),
+    ProjectsSaveFinished(Result<(), String>),
     /// Ask the AI to transform the whole prompt with this instruction.
     AiRewrite {
         instruction: String,
@@ -153,6 +158,7 @@ pub enum Effect {
     SaveDraft(String),
     /// A voice command asked to stop the microphone.
     StopListening,
+    SaveProjects(Vec<Project>),
     /// Run this rewrite on a worker and report back with `AiRewriteFinished`.
     AiRewrite(RewriteRequest),
     /// Paste the clipboard into the focused app; `submit` presses Return.
@@ -235,7 +241,7 @@ impl AppCore {
             active_session: None,
             toast: None,
             pending: None,
-            projects: placeholder_projects(),
+            projects: default_projects(),
             selected_project: 0,
             recent: Vec::new(),
             draft_dirty_since: None,
@@ -282,6 +288,29 @@ impl AppCore {
     #[must_use]
     pub fn selected_project(&self) -> usize {
         self.selected_project
+    }
+
+    #[must_use]
+    pub fn project(&self) -> &Project {
+        &self.projects[self.selected_project]
+    }
+
+    /// Selects the project called `name`, if there is one.
+    pub fn select_project_named(&mut self, name: &str) {
+        if let Some(i) = self.projects.iter().position(|p| p.name == name) {
+            self.selected_project = i;
+        }
+    }
+
+    /// Swaps in a new list, keeping the selection by name where possible.
+    fn install_projects(&mut self, list: Vec<Project>) {
+        let current = self.project().name.clone();
+        self.projects = list;
+        self.selected_project = self
+            .projects
+            .iter()
+            .position(|p| p.name == current)
+            .unwrap_or(0);
     }
 
     #[must_use]
@@ -510,7 +539,29 @@ impl AppCore {
                     self.selected_project = i;
                 }
             }
-            AppAction::DraftSaveFinished(Ok(())) | AppAction::DraftLoaded(Ok(None)) => {}
+            AppAction::ProjectsLoaded(Ok(list)) => {
+                if !list.is_empty() {
+                    self.install_projects(list);
+                }
+            }
+            AppAction::ProjectsLoaded(Err(e)) => {
+                self.show_toast(format!("Could not load projects: {e}"), true, now.mono);
+            }
+            AppAction::ReplaceProjects(list) => {
+                let list = if list.is_empty() {
+                    default_projects()
+                } else {
+                    list
+                };
+                self.install_projects(list);
+                effects.push(Effect::SaveProjects(self.projects.clone()));
+            }
+            AppAction::ProjectsSaveFinished(Err(e)) => {
+                self.show_toast(format!("Could not save projects: {e}"), true, now.mono);
+            }
+            AppAction::DraftSaveFinished(Ok(()))
+            | AppAction::DraftLoaded(Ok(None))
+            | AppAction::ProjectsSaveFinished(Ok(())) => {}
             AppAction::AiCleanUp => {
                 self.begin_rewrite(CLEAN_UP_INSTRUCTION.to_owned(), now, &mut effects);
             }
@@ -571,6 +622,9 @@ impl AppCore {
         }
         // Commands live only in finals; a partial keeps its command words
         // visible (highlighted by the UI) until the Final removes them.
+        // Project corrections run on the dictation left after command
+        // extraction, and only on fresh speech: committed text is never
+        // touched again.
         let mut commands = Vec::new();
         let ev = match &ev.kind {
             SpeechEventKind::Final {
@@ -583,12 +637,24 @@ impl AppCore {
                 SpeechEvent {
                     kind: SpeechEventKind::Final {
                         utterance: *utterance,
-                        text: extracted.dictation,
+                        text: self.project().correct(&extracted.dictation),
                         confidence: *confidence,
                     },
                     ..ev.clone()
                 }
             }
+            SpeechEventKind::Partial {
+                utterance,
+                revision,
+                text,
+            } => SpeechEvent {
+                kind: SpeechEventKind::Partial {
+                    utterance: *utterance,
+                    revision: *revision,
+                    text: self.project().correct(text),
+                },
+                ..ev.clone()
+            },
             _ => ev.clone(),
         };
         let ev = &ev;
@@ -750,6 +816,7 @@ impl AppCore {
             id,
             instruction,
             content,
+            context: self.project().ai_context(),
         }));
     }
 
@@ -1536,6 +1603,78 @@ mod tests {
             ),
             Clock::at(at),
         )
+    }
+
+    #[test]
+    fn project_corrections_apply_to_fresh_dictation_only() {
+        use crate::core::project::Correction;
+        let mut core = AppCore::new();
+        let mut acme = Project::new("Acme");
+        acme.corrections = vec![Correction {
+            from: "you never sheets".into(),
+            to: "Univer Sheets".into(),
+        }];
+        acme.context = "A spreadsheet app.".into();
+        core.dispatch(
+            AppAction::ProjectsLoaded(Ok(vec![Project::new("Default"), acme])),
+            Clock::at(0),
+        );
+        typed(&mut core, "you never sheets stays as typed. ", 0);
+        core.dispatch(AppAction::SelectProject(1), Clock::at(1));
+        assert_eq!(core.project().name, "Acme");
+        core.dispatch(AppAction::SessionStarted(1), Clock::at(2));
+        core.dispatch(
+            speech(1, 1, SpeechEventKind::VoiceStarted { utterance: 1 }),
+            Clock::at(3),
+        );
+        core.dispatch(
+            speech(
+                1,
+                2,
+                SpeechEventKind::Partial {
+                    utterance: 1,
+                    revision: 1,
+                    text: "Open you never".into(),
+                },
+            ),
+            Clock::at(4),
+        );
+        assert!(core.doc().rendered().ends_with("Open you never"));
+        final_at(&mut core, 3, 1, "Open You Never Sheets. Zevro new line", 5);
+        assert_eq!(
+            core.doc().committed(),
+            "you never sheets stays as typed. Open Univer Sheets.\n"
+        );
+
+        let effects = core.dispatch(
+            AppAction::AiRewrite {
+                instruction: "shorten".into(),
+            },
+            Clock::at(6),
+        );
+        assert!(matches!(
+            effects.as_slice(),
+            [Effect::AiRewrite(r)] if r.context.starts_with("A spreadsheet app.")
+        ));
+    }
+
+    #[test]
+    fn replacing_projects_keeps_selection_by_name_and_persists() {
+        let mut core = AppCore::new();
+        core.dispatch(
+            AppAction::ProjectsLoaded(Ok(vec![Project::new("A"), Project::new("B")])),
+            Clock::at(0),
+        );
+        core.dispatch(AppAction::SelectProject(1), Clock::at(1));
+        let effects = core.dispatch(
+            AppAction::ReplaceProjects(vec![Project::new("B"), Project::new("C")]),
+            Clock::at(2),
+        );
+        assert_eq!(core.project().name, "B");
+        assert_eq!(core.selected_project(), 0);
+        assert!(matches!(effects.as_slice(), [Effect::SaveProjects(l)] if l.len() == 2));
+        core.dispatch(AppAction::ReplaceProjects(Vec::new()), Clock::at(3));
+        assert_eq!(core.project().name, "Default", "an empty list falls back");
     }
 
     #[test]

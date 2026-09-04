@@ -8,6 +8,8 @@ pub struct RewriteRequest {
     pub id: u64,
     pub instruction: String,
     pub content: String,
+    /// Project glossary and notes; empty when the project has none.
+    pub context: String,
 }
 
 /// Outcome of a rewrite, including token usage so spend can be tracked.

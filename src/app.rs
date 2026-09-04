@@ -16,7 +16,7 @@ use crate::adapters::speech::WhisperEngine;
 use crate::adapters::typist::SystemTypist;
 use crate::core::action::RECENT_LIMIT;
 use crate::core::action::TypingPolicy;
-use crate::core::{AppAction, AppCore, Clock, Effect};
+use crate::core::{AppAction, AppCore, Clock, Effect, Project};
 use crate::ports::ai::{RewriteResponse, Rewriter};
 use crate::ports::clipboard::Clipboard;
 use crate::ports::engine::{AudioChunk, EngineConfig, PushError, SpeechEngine};
@@ -113,6 +113,8 @@ pub struct PromptBoxApp {
     pub show_commands: bool,
     /// Whether the settings window is open.
     pub show_settings: bool,
+    /// The project editor, while open.
+    pub project_editor: Option<ProjectEditor>,
     /// Text in the AI instruction box under the prompt.
     pub ai_instruction: String,
     /// Draft values in the settings window until saved.
@@ -144,6 +146,7 @@ impl PromptBoxApp {
     ) -> Self {
         let recent = history.load_recent(RECENT_LIMIT);
         let draft = history.load_draft();
+        let projects = history.load_projects();
         let settings = history.load_settings().unwrap_or_else(|e| {
             log::warn!("{e}; using default settings");
             Settings::default()
@@ -169,6 +172,7 @@ impl PromptBoxApp {
             docked_corner: None,
             show_commands: false,
             show_settings: false,
+            project_editor: None,
             ai_instruction: String::new(),
             settings_draft: Settings::default(),
             rewriter: None,
@@ -179,6 +183,10 @@ impl PromptBoxApp {
         app.settings_draft = app.settings.clone();
         app.rebuild_rewriter();
         app.core.set_trigger(&app.settings.trigger);
+        let wanted = app.settings.project.clone();
+        app.dispatch(AppAction::ProjectsLoaded(projects));
+        app.core.select_project_named(&wanted);
+        app.remember_selected_project();
         app.dispatch(AppAction::RecentLoaded(recent));
         app.dispatch(AppAction::DraftLoaded(draft));
         app
@@ -427,10 +435,24 @@ impl PromptBoxApp {
         }
     }
 
+    /// Keeps `settings.project` in step with the core's selection so the
+    /// same project is active after a restart.
+    fn remember_selected_project(&mut self) {
+        let name = self.core.project().name.as_str();
+        if self.settings.project != name {
+            self.settings.project = name.to_owned();
+            self.settings_draft.project = name.to_owned();
+            if let Err(e) = self.history.save_settings(&self.settings) {
+                log::warn!("could not save settings: {e}");
+            }
+        }
+    }
+
     /// The single entry point for every user, speech, or timer action.
     pub fn dispatch(&mut self, action: AppAction) {
         let now = self.clock();
         let effects = self.core.dispatch(action, now);
+        self.remember_selected_project();
         for effect in effects {
             let result = match effect {
                 Effect::WriteClipboard(text) => {
@@ -442,6 +464,9 @@ impl PromptBoxApp {
                 },
                 Effect::SaveDraft(text) => {
                     AppAction::DraftSaveFinished(self.history.save_draft(&text))
+                }
+                Effect::SaveProjects(list) => {
+                    AppAction::ProjectsSaveFinished(self.history.save_projects(&list))
                 }
                 Effect::StopListening => {
                     self.stop_listening();
@@ -526,16 +551,46 @@ impl PromptBoxApp {
         self.recognizer = Recognizer::Loading(rx);
     }
 
+    /// Opens the project editor on a copy of the current list.
+    pub fn open_project_editor(&mut self) {
+        self.project_editor = Some(ProjectEditor::from_projects(
+            self.core.projects(),
+            self.core.selected_project(),
+        ));
+    }
+
+    /// Applies the editor's contents, persists them, and closes it. Returns
+    /// false (and keeps the editor open) when a name is empty or repeated.
+    pub fn save_project_editor(&mut self) -> bool {
+        let Some(editor) = &self.project_editor else {
+            return true;
+        };
+        let list = match editor.to_projects() {
+            Ok(list) => list,
+            Err(msg) => {
+                if let Some(editor) = &mut self.project_editor {
+                    editor.error = Some(msg);
+                }
+                return false;
+            }
+        };
+        let chosen = editor.drafts[editor.selected].name.trim().to_owned();
+        self.project_editor = None;
+        self.dispatch(AppAction::ReplaceProjects(list));
+        self.core.select_project_named(&chosen);
+        self.remember_selected_project();
+        true
+    }
+
     /// Project vocabulary plus example command phrases, so whisper is
     /// primed to hear the trigger word and the grammar after it.
     fn vocabulary_hint(&self) -> String {
         use std::fmt::Write as _;
-        let p = &self.core.projects()[self.core.selected_project()];
         let mut trigger = self.core.trigger().to_owned();
         if let Some(first) = trigger.get_mut(0..1) {
             first.make_ascii_uppercase();
         }
-        let mut hint = p.vocabulary.join(", ");
+        let mut hint = self.core.project().recognition_terms().join(", ");
         if !hint.is_empty() {
             hint.push_str(". ");
         }
@@ -842,5 +897,91 @@ mod tests {
             Corner::BottomRight.position(tiny, outer, 8.0),
             egui::pos2(0.0, 0.0)
         );
+    }
+}
+
+/// Editable text form of one project: lists are one entry per line.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProjectDraft {
+    pub name: String,
+    pub vocabulary: String,
+    pub corrections: String,
+    pub glossary: String,
+    pub context: String,
+}
+
+impl ProjectDraft {
+    fn from_project(p: &Project) -> Self {
+        use crate::core::project::lines;
+        Self {
+            name: p.name.clone(),
+            vocabulary: lines::vocabulary_to_text(&p.vocabulary),
+            corrections: lines::corrections_to_text(&p.corrections),
+            glossary: lines::glossary_to_text(&p.glossary),
+            context: p.context.clone(),
+        }
+    }
+
+    fn to_project(&self) -> Project {
+        use crate::core::project::lines;
+        Project {
+            name: self.name.trim().to_owned(),
+            vocabulary: lines::vocabulary_from_text(&self.vocabulary),
+            corrections: lines::corrections_from_text(&self.corrections),
+            glossary: lines::glossary_from_text(&self.glossary),
+            context: self.context.trim().to_owned(),
+        }
+    }
+}
+
+/// State of the Projects window: every project as editable text, plus
+/// which one is being edited.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProjectEditor {
+    pub drafts: Vec<ProjectDraft>,
+    pub selected: usize,
+    pub error: Option<String>,
+}
+
+impl ProjectEditor {
+    fn from_projects(projects: &[Project], selected: usize) -> Self {
+        Self {
+            drafts: projects.iter().map(ProjectDraft::from_project).collect(),
+            selected: selected.min(projects.len().saturating_sub(1)),
+            error: None,
+        }
+    }
+
+    /// Adds an unnamed project and selects it; Save insists on a name.
+    pub fn add(&mut self) {
+        self.drafts
+            .push(ProjectDraft::from_project(&Project::new("")));
+        self.selected = self.drafts.len() - 1;
+        self.error = None;
+    }
+
+    /// Removes the selected project; the last one cannot be removed.
+    pub fn remove_selected(&mut self) {
+        if self.drafts.len() > 1 {
+            self.drafts.remove(self.selected);
+            self.selected = self.selected.min(self.drafts.len() - 1);
+        }
+        self.error = None;
+    }
+
+    fn to_projects(&self) -> Result<Vec<Project>, String> {
+        let list: Vec<Project> = self.drafts.iter().map(ProjectDraft::to_project).collect();
+        for (i, p) in list.iter().enumerate() {
+            if p.name.is_empty() {
+                return Err("Every project needs a name".to_owned());
+            }
+            if list[..i]
+                .iter()
+                .any(|q| q.name.eq_ignore_ascii_case(&p.name))
+            {
+                return Err(format!("Two projects are called \"{}\"", p.name));
+            }
+        }
+        Ok(list)
     }
 }

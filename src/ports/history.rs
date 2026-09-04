@@ -4,6 +4,8 @@ use std::time::SystemTime;
 
 use serde::{Deserialize, Serialize};
 
+use crate::core::project::Project;
+
 /// An immutable snapshot taken when Send is pressed. `id` is stable so
 /// retrying the same send never duplicates history.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -47,6 +49,9 @@ pub struct Settings {
     /// Press Return after pasting.
     #[serde(default = "default_true")]
     pub submit_after_paste: bool,
+    /// Name of the selected project; empty means the first one.
+    #[serde(default)]
+    pub project: String,
 }
 
 fn default_true() -> bool {
@@ -63,6 +68,7 @@ impl Default for Settings {
             theme: ThemeChoice::default(),
             type_on_send: true,
             submit_after_paste: true,
+            project: String::new(),
         }
     }
 }
@@ -75,4 +81,7 @@ pub trait HistoryStore {
     fn load_recent(&mut self, limit: usize) -> Result<Vec<SentPrompt>, String>;
     fn save_draft(&mut self, text: &str) -> Result<(), String>;
     fn load_draft(&mut self) -> Result<Option<String>, String>;
+    /// `Ok(empty)` when nothing has been saved yet.
+    fn load_projects(&mut self) -> Result<Vec<Project>, String>;
+    fn save_projects(&mut self, projects: &[Project]) -> Result<(), String>;
 }

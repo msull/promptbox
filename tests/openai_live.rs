@@ -23,6 +23,7 @@ fn cleans_up_a_dictated_sentence() {
             id: 1,
             instruction: CLEAN_UP_INSTRUCTION.into(),
             content: "um so add a a pedantic model for the dynamo db item and and use a conditional expression so the the write isn't overwritten".into(),
+            context: String::new(),
         })
         .unwrap();
     println!(

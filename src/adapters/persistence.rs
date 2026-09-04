@@ -5,6 +5,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use crate::core::project::Project;
 use crate::ports::history::{HistoryStore, SentPrompt, Settings};
 
 pub struct FileStore {
@@ -36,6 +37,10 @@ impl FileStore {
 
     fn settings_path(&self) -> PathBuf {
         self.dir.join("settings.json")
+    }
+
+    fn projects_path(&self) -> PathBuf {
+        self.dir.join("projects.json")
     }
 
     fn write_atomic(&self, path: &Path, bytes: &[u8]) -> Result<(), String> {
@@ -107,6 +112,21 @@ impl HistoryStore for FileStore {
         self.write_atomic(&self.draft_path(), text.as_bytes())
     }
 
+    fn load_projects(&mut self) -> Result<Vec<Project>, String> {
+        let path = self.projects_path();
+        let bytes = match fs::read(&path) {
+            Ok(b) => b,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(e) => return Err(format!("read {}: {e}", path.display())),
+        };
+        serde_json::from_slice(&bytes).map_err(|e| format!("parse {}: {e}", path.display()))
+    }
+
+    fn save_projects(&mut self, projects: &[Project]) -> Result<(), String> {
+        let bytes = serde_json::to_vec_pretty(projects).map_err(|e| e.to_string())?;
+        self.write_atomic(&self.projects_path(), &bytes)
+    }
+
     fn load_draft(&mut self) -> Result<Option<String>, String> {
         match fs::read_to_string(self.draft_path()) {
             Ok(s) if s.is_empty() => Ok(None),
@@ -125,6 +145,7 @@ pub struct MemoryStore {
     pub fail_sent: Option<String>,
     pub fail_draft: Option<String>,
     pub settings: Settings,
+    pub projects: Vec<Project>,
 }
 
 impl HistoryStore for MemoryStore {
@@ -160,6 +181,15 @@ impl HistoryStore for MemoryStore {
 
     fn load_draft(&mut self) -> Result<Option<String>, String> {
         Ok(self.draft.clone().filter(|s| !s.is_empty()))
+    }
+
+    fn load_projects(&mut self) -> Result<Vec<Project>, String> {
+        Ok(self.projects.clone())
+    }
+
+    fn save_projects(&mut self, projects: &[Project]) -> Result<(), String> {
+        self.projects = projects.to_vec();
+        Ok(())
     }
 }
 
@@ -213,6 +243,22 @@ mod tests {
             crate::ports::history::ThemeChoice::Auto
         );
         assert!(!dir.path().join("nested/history.tmp").exists());
+    }
+
+    #[test]
+    fn projects_round_trip_and_start_empty() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = FileStore::new(dir.path().to_path_buf());
+        assert_eq!(store.load_projects().unwrap(), Vec::<Project>::new());
+        let mut p = Project::new("Acme");
+        p.vocabulary = vec!["Univer Sheets".into()];
+        p.corrections = vec![crate::core::project::Correction {
+            from: "you never sheets".into(),
+            to: "Univer Sheets".into(),
+        }];
+        p.context = "A spreadsheet.".into();
+        store.save_projects(&[p.clone()]).unwrap();
+        assert_eq!(store.load_projects().unwrap(), vec![p]);
     }
 
     #[test]
