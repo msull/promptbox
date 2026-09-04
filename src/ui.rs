@@ -14,6 +14,15 @@ const SEND: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key::En
 const COPY_ALL: KeyboardShortcut =
     KeyboardShortcut::new(Modifiers::COMMAND.plus(Modifiers::SHIFT), Key::C);
 const TOGGLE_LISTEN: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key::L);
+const UNDO: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key::Z);
+const REDO: KeyboardShortcut =
+    KeyboardShortcut::new(Modifiers::COMMAND.plus(Modifiers::SHIFT), Key::Z);
+const DELETE_SENTENCE: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key::Backspace);
+const DELETE_PARAGRAPH: KeyboardShortcut =
+    KeyboardShortcut::new(Modifiers::COMMAND.plus(Modifiers::SHIFT), Key::Backspace);
+const NEW_PARAGRAPH: KeyboardShortcut = KeyboardShortcut::new(Modifiers::SHIFT, Key::Enter);
+const CLEAR: KeyboardShortcut =
+    KeyboardShortcut::new(Modifiers::COMMAND.plus(Modifiers::SHIFT), Key::K);
 
 pub fn draw(app: &mut PromptBoxApp, ui: &mut Ui) {
     handle_shortcuts(app, ui);
@@ -22,19 +31,32 @@ pub fn draw(app: &mut PromptBoxApp, ui: &mut Ui) {
     egui::CentralPanel::default().show(ui, |ui| editor(app, ui));
 }
 
+/// Shortcuts are consumed before the text box sees them, so the document's
+/// single history owns undo/redo rather than egui's internal one.
 fn handle_shortcuts(app: &mut PromptBoxApp, ui: &mut Ui) {
-    let (send, copy, toggle) = ui.input_mut(|i| {
-        (
-            i.consume_shortcut(&SEND),
-            i.consume_shortcut(&COPY_ALL),
-            i.consume_shortcut(&TOGGLE_LISTEN),
-        )
+    // Order matters: more modifiers first so ⌘⇧Z is not eaten by ⌘Z.
+    type Binding = (&'static KeyboardShortcut, fn() -> AppAction);
+    const BINDINGS: &[Binding] = &[
+        (&REDO, || AppAction::Redo),
+        (&UNDO, || AppAction::Undo),
+        (&DELETE_PARAGRAPH, || AppAction::DeleteParagraph),
+        (&DELETE_SENTENCE, || AppAction::DeleteSentence),
+        (&CLEAR, || AppAction::ClearPrompt),
+        (&COPY_ALL, || AppAction::CopyPrompt),
+        (&SEND, || AppAction::SendPrompt),
+        (&NEW_PARAGRAPH, || AppAction::NewParagraph),
+    ];
+    let mut actions = Vec::new();
+    let toggle = ui.input_mut(|i| {
+        for (shortcut, make) in BINDINGS {
+            if i.consume_shortcut(shortcut) {
+                actions.push(make());
+            }
+        }
+        i.consume_shortcut(&TOGGLE_LISTEN)
     });
-    if send {
-        app.dispatch(AppAction::SendPrompt);
-    }
-    if copy {
-        app.dispatch(AppAction::CopyPrompt);
+    for action in actions {
+        app.dispatch(action);
     }
     if toggle {
         if app.is_live() {
@@ -236,12 +258,42 @@ fn status_indicator(app: &mut PromptBoxApp, ui: &mut Ui) {
 }
 
 fn bottom_bar(app: &mut PromptBoxApp, ui: &mut Ui) {
-    ui.horizontal(|ui| {
-        if ui.button("Undo").clicked() {
+    // Wrapped so a narrow docked window keeps every button reachable.
+    ui.horizontal_wrapped(|ui| {
+        if ui.button("Undo").on_hover_text("⌘Z").clicked() {
             app.dispatch(AppAction::Undo);
         }
-        if ui.button("Clear").clicked() {
+        if ui
+            .add_enabled(app.core().doc().can_redo(), egui::Button::new("Redo"))
+            .on_hover_text("⌘⇧Z")
+            .clicked()
+        {
+            app.dispatch(AppAction::Redo);
+        }
+        if ui
+            .button("Delete sentence")
+            .on_hover_text("Remove the last sentence (⌘⌫). ⌘⇧⌫ removes the paragraph.")
+            .clicked()
+        {
+            app.dispatch(AppAction::DeleteSentence);
+        }
+        if ui.button("Clear").on_hover_text("⌘⇧K").clicked() {
             app.dispatch(AppAction::ClearPrompt);
+        }
+        let busy = app.core().is_busy();
+        if ui
+            .add_enabled(!busy, egui::Button::new("Copy"))
+            .on_hover_text("Copy without clearing (⌘⇧C)")
+            .clicked()
+        {
+            app.dispatch(AppAction::CopyPrompt);
+        }
+        if ui
+            .add_enabled(!busy, egui::Button::new("Send →"))
+            .on_hover_text("Copy to clipboard and clear (⌘↩)")
+            .clicked()
+        {
+            app.dispatch(AppAction::SendPrompt);
         }
         if let Some(toast) = app.core().toast() {
             let mut text = RichText::new(&toast.text);
@@ -250,23 +302,6 @@ fn bottom_bar(app: &mut PromptBoxApp, ui: &mut Ui) {
             }
             ui.label(text);
         }
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            let busy = app.core().is_busy();
-            if ui
-                .add_enabled(!busy, egui::Button::new("Send →"))
-                .on_hover_text("Copy to clipboard and clear (⌘↩)")
-                .clicked()
-            {
-                app.dispatch(AppAction::SendPrompt);
-            }
-            if ui
-                .add_enabled(!busy, egui::Button::new("Copy"))
-                .on_hover_text("Copy without clearing (⌘⇧C)")
-                .clicked()
-            {
-                app.dispatch(AppAction::CopyPrompt);
-            }
-        });
     });
 }
 

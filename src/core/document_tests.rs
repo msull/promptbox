@@ -959,6 +959,28 @@ fn undo_reverts_last_entry_and_cancels_provisional_first() {
 }
 
 #[test]
+fn redo_reapplies_until_a_new_edit_supersedes_it() {
+    let mut doc = Document::new();
+    doc.apply_manual_edit(0..0, "one", OverlapPolicy::CommitProvisional)
+        .unwrap();
+    doc.apply_manual_edit(3..3, " two", OverlapPolicy::CommitProvisional)
+        .unwrap();
+    assert!(!doc.can_redo());
+    assert!(doc.undo());
+    assert_eq!(doc.committed(), "one");
+    assert!(doc.can_redo());
+    assert!(doc.redo());
+    assert_eq!(doc.committed(), "one two");
+    assert_eq!(doc.cursor(), 7);
+    assert!(!doc.redo());
+    assert!(doc.undo());
+    doc.apply_manual_edit(3..3, " three", OverlapPolicy::CommitProvisional)
+        .unwrap();
+    assert!(!doc.can_redo(), "new edit clears redo");
+    assert_eq!(doc.replay_history(), doc.committed());
+}
+
+#[test]
 fn replace_all_is_one_undoable_entry() {
     let mut doc = Document::new();
     doc.apply_manual_edit(0..0, "keep me", OverlapPolicy::CommitProvisional)

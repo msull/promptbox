@@ -5,11 +5,12 @@ with [egui](https://docs.rs/egui) / [eframe](https://docs.rs/eframe). Design:
 `voice-prompt-workbench-design.md`. Milestone 0 spike and its findings:
 `spikes/voice-spike/`.
 
-Current state (Milestone 2, live dictation): microphone capture through a
+Current state (Milestone 3, transcript operations): microphone capture through a
 lock-free ring buffer, whisper.cpp (Metal on macOS) with emulated streaming
 partials, dimmed provisional text in the editor, an input level meter,
 stall and audio-gap warnings, Copy and Send through a clipboard port that
-reports failure, sent-prompt history, autosaved draft, undo, and toasts.
+reports failure, sent-prompt history, autosaved draft, undo/redo, delete
+sentence/paragraph, paragraph breaks, and toasts.
 
 ## First run
 
@@ -61,7 +62,11 @@ Data lives in the platform data dir (`~/Library/Application Support/promptbox`
 on macOS): `history.json` (last 50 sent prompts), `draft.txt` (autosaved
 every 500 ms after a change), and `models/ggml-base.en.bin`.
 
-Shortcuts: ⌘L start/stop listening, ⌘↩ Send (copy and clear), ⌘⇧C Copy.
+Shortcuts: ⌘L start/stop listening, ⌘↩ Send (copy and clear), ⌘⇧C Copy,
+⌘Z / ⌘⇧Z undo and redo (one history covering typing, dictation, and
+Send), ⌘⌫ delete last sentence, ⌘⇧⌫ delete last paragraph, ⇧↩ new
+paragraph, ⌘⇧K clear. "Last" means the unit ending at or containing the
+cursor, which after dictation is what was just said.
 The 📌 button pins the window above others (remembered in `settings.json`).
 **Dock** shrinks the window to 300×330 and moves it to the next screen
 corner on each click (top-right, bottom-right, bottom-left, top-left).

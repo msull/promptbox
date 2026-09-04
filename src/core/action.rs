@@ -10,6 +10,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use crate::core::document::{Document, OverlapPolicy};
 use crate::core::project::{Project, placeholder_projects};
+use crate::core::text::{last_paragraph_range, last_sentence_range, paragraph_break_for};
 use crate::ports::history::SentPrompt;
 use crate::ports::speech::{SessionId, SpeechEvent, SpeechEventKind};
 
@@ -87,6 +88,15 @@ pub enum AppAction {
     RecentLoaded(Result<Vec<SentPrompt>, String>),
     ClearPrompt,
     Undo,
+    Redo,
+    /// Removes the sentence ending at or containing the cursor.
+    DeleteSentence,
+    /// Removes the paragraph ending at or containing the cursor.
+    DeleteParagraph,
+    /// Inserts a line break at the cursor.
+    Newline,
+    /// Starts a new paragraph at the cursor (one blank line).
+    NewParagraph,
     SelectProject(usize),
     Tick,
 }
@@ -325,6 +335,25 @@ impl AppCore {
                     self.show_toast("Nothing to undo".to_owned(), false, now.mono);
                 }
             }
+            AppAction::Redo => {
+                if self.doc.redo() {
+                    self.mark_dirty(now.mono);
+                } else {
+                    self.show_toast("Nothing to redo".to_owned(), false, now.mono);
+                }
+            }
+            AppAction::DeleteSentence => {
+                self.delete_unit(last_sentence_range, "No sentence to delete", now.mono);
+            }
+            AppAction::DeleteParagraph => {
+                self.delete_unit(last_paragraph_range, "No paragraph to delete", now.mono);
+            }
+            AppAction::Newline => self.insert_at_cursor("\n", now.mono),
+            AppAction::NewParagraph => {
+                self.doc.commit_provisional();
+                let text = paragraph_break_for(self.doc.committed(), self.doc.cursor());
+                self.insert_at_cursor(text, now.mono);
+            }
             AppAction::SelectProject(i) => {
                 if i < self.projects.len() {
                     self.selected_project = i;
@@ -375,6 +404,43 @@ impl AppCore {
                 }
             }
             Err(r) => log::debug!("speech event {}/{} ignored: {r:?}", ev.session, ev.sequence),
+        }
+    }
+
+    /// Commits any live span, then removes the unit `range_of` picks out
+    /// relative to the cursor, as one undoable edit.
+    fn delete_unit(
+        &mut self,
+        range_of: fn(&str, usize) -> Option<Range<usize>>,
+        empty_msg: &str,
+        now: Duration,
+    ) {
+        self.doc.commit_provisional();
+        let Some(range) = range_of(self.doc.committed(), self.doc.cursor()) else {
+            self.show_toast(empty_msg.to_owned(), false, now);
+            return;
+        };
+        if self
+            .doc
+            .apply_manual_edit(range, "", OverlapPolicy::CommitProvisional)
+            .is_ok()
+        {
+            self.mark_dirty(now);
+        }
+    }
+
+    fn insert_at_cursor(&mut self, text: &str, now: Duration) {
+        if text.is_empty() {
+            return;
+        }
+        self.doc.commit_provisional();
+        let at = self.doc.cursor();
+        if self
+            .doc
+            .apply_manual_edit(at..at, text, OverlapPolicy::CommitProvisional)
+            .is_ok()
+        {
+            self.mark_dirty(now);
         }
     }
 
@@ -831,6 +897,96 @@ mod tests {
         );
         assert_eq!(*core.status(), SessionStatus::Error("no model".into()));
         assert!(!core.is_listening());
+    }
+
+    #[test]
+    fn delete_sentence_removes_the_most_recent_sentence_and_is_undoable() {
+        let mut core = AppCore::new();
+        typed(&mut core, "First one. Second one.", 0);
+        core.dispatch(AppAction::DeleteSentence, Clock::at(1));
+        assert_eq!(core.doc().committed(), "First one.");
+        assert_eq!(core.doc().cursor(), 10);
+        core.dispatch(AppAction::Undo, Clock::at(2));
+        assert_eq!(core.doc().committed(), "First one. Second one.");
+        core.dispatch(AppAction::Redo, Clock::at(3));
+        assert_eq!(core.doc().committed(), "First one.");
+        core.dispatch(AppAction::DeleteSentence, Clock::at(4));
+        assert_eq!(core.doc().committed(), "");
+        core.dispatch(AppAction::DeleteSentence, Clock::at(5));
+        assert_eq!(toast_text(&core), "No sentence to delete");
+    }
+
+    #[test]
+    fn delete_sentence_commits_a_live_partial_first() {
+        let mut core = AppCore::new();
+        typed(&mut core, "Keep this.", 0);
+        core.dispatch(AppAction::SessionStarted(1), Clock::at(1));
+        core.dispatch(
+            speech(1, 1, SpeechEventKind::VoiceStarted { utterance: 1 }),
+            Clock::at(2),
+        );
+        core.dispatch(
+            speech(
+                1,
+                2,
+                SpeechEventKind::Partial {
+                    utterance: 1,
+                    revision: 1,
+                    text: "drop this".into(),
+                },
+            ),
+            Clock::at(3),
+        );
+        core.dispatch(AppAction::DeleteSentence, Clock::at(4));
+        assert_eq!(core.doc().committed(), "Keep this.");
+        assert!(core.doc().provisional().is_none());
+    }
+
+    #[test]
+    fn delete_paragraph_and_paragraph_breaks() {
+        let mut core = AppCore::new();
+        typed(&mut core, "Para one.", 0);
+        core.dispatch(AppAction::NewParagraph, Clock::at(1));
+        assert_eq!(core.doc().committed(), "Para one.\n\n");
+        core.dispatch(AppAction::NewParagraph, Clock::at(2));
+        assert_eq!(
+            core.doc().committed(),
+            "Para one.\n\n",
+            "no extra blank lines"
+        );
+        typed(&mut core, "Para two.", 3);
+        core.dispatch(AppAction::Newline, Clock::at(4));
+        typed(&mut core, "same para", 5);
+        assert_eq!(core.doc().committed(), "Para one.\n\nPara two.\nsame para");
+        core.dispatch(AppAction::DeleteParagraph, Clock::at(6));
+        assert_eq!(core.doc().committed(), "Para one.");
+        core.dispatch(AppAction::Undo, Clock::at(7));
+        assert_eq!(core.doc().committed(), "Para one.\n\nPara two.\nsame para");
+    }
+
+    #[test]
+    fn dictation_after_a_paragraph_break_does_not_add_a_leading_space() {
+        let mut core = AppCore::new();
+        typed(&mut core, "Para one.", 0);
+        core.dispatch(AppAction::NewParagraph, Clock::at(1));
+        core.dispatch(AppAction::SessionStarted(1), Clock::at(2));
+        core.dispatch(
+            speech(1, 1, SpeechEventKind::VoiceStarted { utterance: 1 }),
+            Clock::at(3),
+        );
+        core.dispatch(
+            speech(
+                1,
+                2,
+                SpeechEventKind::Final {
+                    utterance: 1,
+                    text: "Para two.".into(),
+                    confidence: None,
+                },
+            ),
+            Clock::at(4),
+        );
+        assert_eq!(core.doc().committed(), "Para one.\n\nPara two.");
     }
 
     #[test]

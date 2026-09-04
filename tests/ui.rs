@@ -197,6 +197,42 @@ fn dock_button_cycles_corners_starting_top_right() {
 }
 
 #[test]
+fn delete_sentence_button_and_shortcuts_edit_through_the_core() {
+    use egui::{Key, Modifiers};
+    let mut harness = harness();
+    type_prompt(&mut harness, "Keep this. Drop this.");
+    harness.get_by_label("Delete sentence").click();
+    harness.run_steps(2);
+    assert_eq!(harness.state().core().doc().committed(), "Keep this.");
+
+    // ⌘Z goes to the document history, not egui's text-box undo.
+    harness.key_press_modifiers(Modifiers::COMMAND, Key::Z);
+    harness.run_steps(2);
+    assert_eq!(
+        harness.state().core().doc().committed(),
+        "Keep this. Drop this."
+    );
+    harness.key_press_modifiers(Modifiers::COMMAND | Modifiers::SHIFT, Key::Z);
+    harness.run_steps(2);
+    assert_eq!(harness.state().core().doc().committed(), "Keep this.");
+
+    harness.key_press_modifiers(Modifiers::COMMAND, Key::Backspace);
+    harness.run_steps(2);
+    assert_eq!(harness.state().core().doc().committed(), "");
+    harness.get_by_label("Redo");
+}
+
+#[test]
+fn shift_enter_starts_a_new_paragraph() {
+    use egui::{Key, Modifiers};
+    let mut harness = harness();
+    type_prompt(&mut harness, "One.");
+    harness.key_press_modifiers(Modifiers::SHIFT, Key::Enter);
+    harness.run_steps(2);
+    assert_eq!(harness.state().core().doc().committed(), "One.\n\n");
+}
+
+#[test]
 fn draft_is_restored_on_startup() {
     let store = MemoryStore {
         draft: Some("unsent draft".into()),

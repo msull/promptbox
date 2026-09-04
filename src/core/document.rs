@@ -88,6 +88,8 @@ pub struct Document {
     committed: String,
     provisional: Option<ProvisionalSpan>,
     history: Vec<RangeReplace>,
+    /// Entries undone and not yet superseded by a new edit.
+    redo: Vec<RangeReplace>,
     last_seq: HashMap<SessionId, u64>,
     active_session: Option<SessionId>,
     finished: HashSet<(SessionId, UtteranceId)>,
@@ -140,13 +142,33 @@ impl Document {
         let end = e.range.start + e.new.len();
         self.committed.replace_range(e.range.start..end, &e.old);
         self.cursor = e.range.start + e.old.len();
+        self.redo.push(e);
         true
+    }
+
+    /// Re-applies the most recently undone entry. Returns false when there
+    /// is nothing to redo.
+    pub fn redo(&mut self) -> bool {
+        let Some(e) = self.redo.pop() else {
+            return false;
+        };
+        let end = e.range.start + e.old.len();
+        self.committed.replace_range(e.range.start..end, &e.new);
+        self.cursor = e.range.start + e.new.len();
+        self.history.push(e);
+        true
+    }
+
+    #[must_use]
+    pub fn can_redo(&self) -> bool {
+        !self.redo.is_empty()
     }
 
     /// Loads persisted text as the starting point, without a history entry.
     pub fn load(&mut self, text: &str) {
         self.provisional = None;
         self.history.clear();
+        self.redo.clear();
         text.clone_into(&mut self.committed);
         self.cursor = self.committed.len();
     }
@@ -362,6 +384,7 @@ impl Document {
         };
 
         let old = self.committed[committed_range.clone()].to_owned();
+        self.redo.clear();
         self.history.push(RangeReplace {
             range: committed_range.clone(),
             old,
@@ -419,6 +442,7 @@ impl Document {
         source: EditSource,
         provisional_text: Option<String>,
     ) {
+        self.redo.clear();
         self.history.push(RangeReplace {
             range: anchor..anchor,
             old: String::new(),

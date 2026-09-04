@@ -4,6 +4,7 @@
 pub mod action;
 pub mod document;
 pub mod project;
+pub mod text;
 
 pub use action::{AppAction, AppCore, Clock, Effect, SessionStatus, Toast};
 pub use document::{Document, OverlapPolicy};
