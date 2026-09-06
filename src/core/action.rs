@@ -284,6 +284,9 @@ pub struct AppCore {
     /// Most recent utterance that carried a voice command, for the UI to
     /// acknowledge (the caption overlay flashes it).
     heard_command: Option<HeardCommand>,
+    /// The on-screen preview of the whole prompt is showing ("Zevro
+    /// preview" toggles it; send and clear close it).
+    preview_open: bool,
     pending: Option<Pending>,
     projects: Vec<Project>,
     selected_project: usize,
@@ -323,6 +326,7 @@ impl AppCore {
             active_session: None,
             toast: None,
             heard_command: None,
+            preview_open: false,
             pending: None,
             projects: default_projects(),
             selected_project: 0,
@@ -364,6 +368,17 @@ impl AppCore {
     #[must_use]
     pub fn toast(&self) -> Option<&Toast> {
         self.toast.as_ref()
+    }
+
+    #[must_use]
+    pub fn preview_open(&self) -> bool {
+        self.preview_open
+    }
+
+    /// Shows or hides the whole-prompt preview (the UI closes it after a
+    /// period of no changes).
+    pub fn set_preview_open(&mut self, open: bool) {
+        self.preview_open = open;
     }
 
     /// The latest command utterance; compare `seq` to notice a new one.
@@ -562,7 +577,10 @@ impl AppCore {
                 };
             }
             AppAction::CopyPrompt => self.begin_copy_or_send(PendingKind::Copy, now, &mut effects),
-            AppAction::SendPrompt => self.begin_copy_or_send(PendingKind::Send, now, &mut effects),
+            AppAction::SendPrompt => {
+                self.preview_open = false;
+                self.begin_copy_or_send(PendingKind::Send, now, &mut effects);
+            }
             AppAction::ClipboardWriteFinished(result) => {
                 if let Some(p) = &mut self.pending {
                     p.clipboard = Some(result);
@@ -604,6 +622,7 @@ impl AppCore {
                 self.show_toast(format!("Could not read history: {e}"), true, now.mono);
             }
             AppAction::ClearPrompt => {
+                self.preview_open = false;
                 if !self.doc.is_empty() {
                     self.doc.replace_all("");
                     self.mark_dirty(now.mono);
@@ -932,6 +951,16 @@ impl AppCore {
                         clock.mono,
                     );
                 }
+                return;
+            }
+            Command::Preview => {
+                self.preview_open = !self.preview_open;
+                let msg = if self.preview_open {
+                    "Voice: preview (say \"preview\" again to hide)"
+                } else {
+                    "Voice: preview hidden"
+                };
+                self.show_toast(msg.to_owned(), false, clock.mono);
                 return;
             }
             Command::StopListening => {
@@ -2284,6 +2313,26 @@ mod tests {
         // Undo restores the deleted sentence, not the command words.
         core.dispatch(AppAction::Undo, Clock::at(11));
         assert_eq!(core.doc().committed(), "First sentence.");
+    }
+
+    #[test]
+    fn preview_toggles_by_voice_and_closes_on_send_or_clear() {
+        let mut core = AppCore::new();
+        typed(&mut core, "Ship it.", 0);
+        core.dispatch(AppAction::SessionStarted(1), Clock::at(1));
+        assert!(!core.preview_open());
+        final_at(&mut core, 1, 1, "Zevro preview", 2);
+        assert!(core.preview_open());
+        assert!(toast_text(&core).starts_with("Voice: preview"));
+        final_at(&mut core, 2, 2, "Zevro preview", 3);
+        assert!(!core.preview_open(), "saying it again hides it");
+        final_at(&mut core, 3, 3, "Zevro preview", 4);
+        core.dispatch(AppAction::ClearPrompt, Clock::at(5));
+        assert!(!core.preview_open(), "clear closes it");
+        typed(&mut core, "Again.", 6);
+        core.set_preview_open(true);
+        core.dispatch(AppAction::SendPrompt, Clock::at(7));
+        assert!(!core.preview_open(), "send closes it");
     }
 
     #[test]

@@ -15,6 +15,7 @@ pub const DEMO_SCRIPT: &[&str] = &[
     "Then move that validation down into the service layer.",
     "Zevro new paragraph.",
     "Add unit tests for both cases before you refactor anything.",
+    "Zevro preview.",
 ];
 
 struct Scheduled {

@@ -43,6 +43,8 @@ pub enum Command {
     Copy,
     Send,
     StopListening,
+    /// Toggle the on-screen preview of the whole prompt.
+    Preview,
     /// Run the AI clean-up on the whole prompt.
     CleanUp,
     /// Start dictating an AI instruction. Carries whatever followed the
@@ -74,6 +76,7 @@ impl Command {
             Self::Copy => "Copy to the clipboard, keep the text",
             Self::Send => "Copy to the clipboard and clear",
             Self::StopListening => "Stop listening",
+            Self::Preview => "Show the whole prompt on screen to review it (say again to hide)",
             Self::CleanUp => "AI clean-up of the whole prompt (undoable)",
             Self::Enhance(_) => {
                 "Dictate an AI instruction; say \"confirm\" to send it, \"abort\" to cancel"
@@ -99,6 +102,7 @@ impl Command {
             Self::Copy => "copy".into(),
             Self::Send => "send".into(),
             Self::StopListening => "stop listening".into(),
+            Self::Preview => "preview".into(),
             Self::CleanUp => "clean up".into(),
             Self::Enhance(_) => "enhance".into(),
             Self::Tool(_) => "tool".into(),
@@ -138,6 +142,8 @@ const GRAMMAR: &[(&[&str], Command)] = &[
     (&["send"], Command::Send),
     (&["stop", "listening"], Command::StopListening),
     (&["stop"], Command::StopListening),
+    (&["preview"], Command::Preview),
+    (&["review"], Command::Preview),
     (&["clean", "up"], Command::CleanUp),
     (&["cleanup"], Command::CleanUp),
     (&["enhance"], Command::Enhance(String::new())),
@@ -564,6 +570,15 @@ mod tests {
         assert!(entries.iter().all(|e| !e.command.description().is_empty()));
         assert_eq!(entries[0].command, Command::DeleteSentence);
         assert!(entries[0].phrases.contains(&"scratch that".to_owned()));
+    }
+
+    #[test]
+    fn preview_and_review_toggle_the_preview() {
+        for spoken in ["Zevro preview", "Zebro review.", "zevro Preview"] {
+            let got = extract(spoken, DEFAULT_TRIGGER);
+            assert_eq!(got.commands, vec![Command::Preview], "{spoken}");
+            assert_eq!(got.dictation, "", "{spoken}");
+        }
     }
 
     #[test]

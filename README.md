@@ -94,7 +94,13 @@ they can still be read while the next utterance is being spoken; a sentence
 that is cleared, deleted or undone leaves the bar at once. The bar
 holds for a moment after the text stops changing, then fades out. A
 recognized voice command stays in the bar for a moment in blue (red when it
-was not understood) before it disappears, so you can see what was heard. The choice persists. It is drawn in its own borderless
+was not understood) before it disappears, so you can see what was heard.
+
+**Zevro preview** opens a larger panel in the middle of the same screen with
+the whole prompt (live text in amber), also floating and click-through, so
+you can review it before "Zevro send" without leaving the app you are in.
+It stays until you say "preview" again, send or clear the prompt, or the
+prompt goes a minute without changing. The choice persists. It is drawn in its own borderless
 viewport, which is why the main window is created transparent (its panels
 paint their own opaque backgrounds).
 
@@ -118,6 +124,7 @@ in the app.
 | Zevro copy | Copy without clearing |
 | Zevro send | Copy and clear |
 | Zevro stop | Stop listening |
+| Zevro preview / review | Show the whole prompt on screen to skim it; say again to hide |
 | Zevro clean up | AI clean-up of the whole prompt (undoable) |
 | Zevro enhance … confirm | Dictate an AI instruction (see below) |
 | Zevro tool … confirm | Dictate a request for a registered tool (see Tools) |

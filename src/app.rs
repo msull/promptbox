@@ -120,6 +120,8 @@ pub struct PromptBoxApp {
     pub project_editor: Option<ProjectEditor>,
     /// Text and timing of the on-screen caption overlay.
     pub caption: crate::caption::CaptionState,
+    /// Text and timing of the whole-prompt preview overlay.
+    pub preview: crate::preview::PreviewState,
     /// Text in the AI instruction box under the prompt.
     pub ai_instruction: String,
     /// Draft values in the settings window until saved.
@@ -232,6 +234,7 @@ impl PromptBoxApp {
             show_settings: false,
             project_editor: None,
             caption: crate::caption::CaptionState::default(),
+            preview: crate::preview::PreviewState::default(),
             ai_instruction: String::new(),
             settings_draft: Settings::default(),
             rewriter: None,
@@ -438,6 +441,11 @@ impl PromptBoxApp {
         if let Err(e) = self.history.save_settings(&self.settings) {
             log::warn!("could not save settings: {e}");
         }
+    }
+
+    /// Closes (or opens) the whole-prompt preview overlay.
+    pub fn set_preview_open(&mut self, open: bool) {
+        self.core.set_preview_open(open);
     }
 
     #[must_use]
@@ -983,7 +991,9 @@ impl eframe::App for PromptBoxApp {
         }
         self.sync_dock_badge();
         crate::ui::draw(self, ui);
-        crate::caption::draw(self, &ui.ctx().clone());
+        let ctx = ui.ctx().clone();
+        crate::caption::draw(self, &ctx);
+        crate::preview::draw(self, &ctx);
     }
 
     /// Fully transparent: the window's panels paint their own opaque
