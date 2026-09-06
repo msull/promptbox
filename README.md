@@ -90,7 +90,8 @@ the bottom of the screen Prompt Box is on, floating above every window and
 ignoring the mouse, so you can keep working in another app and still see
 what is coming in. It shows the live (provisional) text preceded by the
 last one or two finalized sentences, which linger for several seconds so
-they can still be read while the next utterance is being spoken. The bar
+they can still be read while the next utterance is being spoken; a sentence
+that is cleared, deleted or undone leaves the bar at once. The bar
 holds for a moment after the text stops changing, then fades out. A
 recognized voice command stays in the bar for a moment in blue (red when it
 was not understood) before it disappears, so you can see what was heard. The choice persists. It is drawn in its own borderless

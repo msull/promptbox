@@ -69,10 +69,13 @@ enum Piece {
 }
 
 impl CaptionState {
-    /// Feeds the document's caption pieces for this frame. Returns whether
-    /// something new was added or the live text changed.
-    fn update(&mut self, parts: &CaptionParts, now: f64) -> bool {
+    /// Feeds the document's caption pieces for this frame; `present` is
+    /// the committed text the caption reflects, so sentences that were
+    /// cleared or deleted leave the bar at once. Returns whether something
+    /// new was added or the live text changed.
+    fn update(&mut self, parts: &CaptionParts, present: &str, now: f64) -> bool {
         let mut changed = false;
+        self.recent.retain(|(t, _)| present.contains(t.as_str()));
         if !parts.committed.is_empty()
             && self
                 .recent
@@ -178,8 +181,10 @@ impl CaptionState {
 pub fn draw(app: &mut PromptBoxApp, ctx: &egui::Context) {
     let now = ctx.input(|i| i.time);
     if app.captions_enabled() && (app.is_live() || app.is_demo_running()) {
-        let parts = app.core().doc().caption_parts();
-        app.caption.update(&parts, now);
+        let doc = app.core().doc();
+        let parts = doc.caption_parts();
+        let present = doc.committed()[..parts.end].to_owned();
+        app.caption.update(&parts, &present, now);
         // Clone the small record: `core()` borrows the whole app.
         let heard = app.core().heard_command().cloned();
         app.caption.flash_command(heard.as_ref(), now);
@@ -283,7 +288,14 @@ mod tests {
         CaptionParts {
             committed: c.into(),
             live: l.into(),
+            end: 0,
         }
+    }
+
+    /// Feed with a document whose committed text is `c` (so the sentence
+    /// is present).
+    fn feed(s: &mut CaptionState, c: &str, l: &str, now: f64) -> bool {
+        s.update(&parts(c, l), c, now)
     }
 
     #[test]
@@ -291,9 +303,9 @@ mod tests {
     fn caption_holds_then_fades_and_hides_when_cleared() {
         let mut s = CaptionState::default();
         assert_eq!(s.alpha(0.0), 0.0, "nothing to show");
-        assert!(s.update(&parts("", "hello"), 10.0));
+        assert!(feed(&mut s, "", "hello", 10.0));
         assert!(
-            !s.update(&parts("", "hello"), 11.0),
+            !feed(&mut s, "", "hello", 11.0),
             "unchanged is not a change"
         );
         assert_eq!(s.text(), "hello");
@@ -302,7 +314,7 @@ mod tests {
         assert!(mid > 0.4 && mid < 0.6, "{mid}");
         assert_eq!(s.alpha(10.0 + HOLD_SECS + FADE_SECS + 1.0), 0.0);
         assert!(
-            s.update(&parts("", "hello world"), 20.0),
+            feed(&mut s, "", "hello world", 20.0),
             "new text restarts the hold"
         );
         assert_eq!(s.alpha(20.5), 1.0);
@@ -314,36 +326,39 @@ mod tests {
     #[allow(clippy::float_cmp)] // changed_at is assigned, never computed
     fn finalized_sentences_linger_while_dictation_continues() {
         let mut s = CaptionState::default();
-        s.update(&parts("", "first po"), 0.0);
+        let one = "First point.";
+        let two = "First point. Second point.";
+        let three = "First point. Second point. Third point.";
+        s.update(&parts("", "first po"), "", 0.0);
         // Final lands: the sentence is now committed, nothing live.
-        assert!(s.update(&parts("First point.", ""), 1.0));
+        assert!(s.update(&parts("First point.", ""), one, 1.0));
         assert_eq!(s.text(), "First point.");
         // Next utterance starts; the same committed sentence is not re-added.
-        assert!(s.update(&parts("First point.", "second"), 2.0));
+        assert!(s.update(&parts("First point.", "second"), one, 2.0));
         assert_eq!(s.text(), "First point. second");
         // It finalizes quickly: both sentences stay visible.
-        s.update(&parts("Second point.", ""), 3.0);
-        s.update(&parts("Second point.", "third"), 3.5);
+        s.update(&parts("Second point.", ""), two, 3.0);
+        s.update(&parts("Second point.", "third"), two, 3.5);
         assert_eq!(s.text(), "First point. Second point. third");
         // A third final pushes the oldest out (at most MAX_RECENT).
-        s.update(&parts("Third point.", ""), 4.0);
+        s.update(&parts("Third point.", ""), three, 4.0);
         assert_eq!(s.text(), "Second point. Third point.");
         // Expiry drops old sentences without restarting the hold.
-        let changed = s.update(&parts("Third point.", ""), 3.0 + LINGER_SECS + 0.1);
+        let changed = s.update(&parts("Third point.", ""), three, 3.0 + LINGER_SECS + 0.1);
         assert!(!changed);
         assert_eq!(s.text(), "Third point.");
         assert_eq!(s.changed_at, 4.0);
-        s.update(&parts("Third point.", ""), 4.0 + LINGER_SECS + 0.1);
+        s.update(&parts("Third point.", ""), three, 4.0 + LINGER_SECS + 0.1);
         assert_eq!(s.text(), "", "everything expired");
     }
 
     #[test]
     fn recognized_command_flashes_once_then_leaves() {
         let mut s = CaptionState::default();
-        s.update(&parts("First point.", "zevro sen"), 0.0);
+        feed(&mut s, "First point.", "zevro sen", 0.0);
         // The Final carried a command: the live text is gone from the
         // document, and the core reports what was heard.
-        s.update(&parts("First point.", ""), 1.0);
+        feed(&mut s, "First point.", "", 1.0);
         let heard = HeardCommand {
             seq: 1,
             spoken: "Zevro send.".into(),
@@ -361,7 +376,7 @@ mod tests {
             ]
         );
         assert!(!s.flash_command(Some(&heard), 1.1), "same seq is not new");
-        s.update(&parts("First point.", ""), 1.0 + FLASH_SECS + 0.1);
+        feed(&mut s, "First point.", "", 1.0 + FLASH_SECS + 0.1);
         assert_eq!(s.pieces(), vec![Piece::Plain("First point.".into())]);
         let unknown = HeardCommand {
             seq: 2,
@@ -373,5 +388,27 @@ mod tests {
             s.pieces().last(),
             Some(Piece::Command { is_error: true, .. })
         ));
+    }
+
+    #[test]
+    fn cleared_or_deleted_sentences_leave_the_caption_at_once() {
+        let mut s = CaptionState::default();
+        s.update(&parts("First point.", ""), "First point.", 0.0);
+        s.update(
+            &parts("Second point.", ""),
+            "First point. Second point.",
+            1.0,
+        );
+        assert_eq!(s.text(), "First point. Second point.");
+        // "Second point." was just deleted: only "First point." remains.
+        let changed = s.update(&parts("First point.", ""), "First point.", 2.0);
+        assert!(!changed, "removal is not a change");
+        assert_eq!(s.text(), "First point.");
+        // Clear: nothing committed any more, the bar empties.
+        s.update(&parts("", ""), "", 3.0);
+        assert_eq!(s.text(), "");
+        // Speaking again shows only the new text.
+        s.update(&parts("", "fresh"), "", 4.0);
+        assert_eq!(s.text(), "fresh");
     }
 }

@@ -39,6 +39,9 @@ pub struct CaptionParts {
     pub committed: String,
     /// Provisional text (empty if no utterance is in progress).
     pub live: String,
+    /// Byte offset into the committed text where the live span sits (or
+    /// the cursor): `committed()[..end]` is the text the caption reflects.
+    pub end: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -252,6 +255,7 @@ impl Document {
         CaptionParts {
             committed: last.to_owned(),
             live: live.to_owned(),
+            end,
         }
     }
 
