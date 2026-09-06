@@ -9,9 +9,11 @@
 
 use std::collections::VecDeque;
 
+use egui::text::{LayoutJob, TextFormat};
 use egui::{Align2, Color32, CornerRadius, FontId, Pos2, Vec2, ViewportBuilder, ViewportId};
 
 use crate::app::PromptBoxApp;
+use crate::core::action::HeardCommand;
 use crate::core::document::CaptionParts;
 
 /// Seconds the caption stays fully visible after its text last changed.
@@ -23,6 +25,11 @@ const FADE_SECS: f64 = 0.8;
 const LINGER_SECS: f64 = 8.0;
 /// At most this many finalized sentences ahead of the live text.
 const MAX_RECENT: usize = 2;
+/// How long a recognized command utterance stays highlighted before it
+/// leaves the caption.
+const FLASH_SECS: f64 = 1.5;
+const FLASH_COLOR: Color32 = Color32::from_rgb(110, 170, 255);
+const FLASH_ERROR_COLOR: Color32 = Color32::from_rgb(255, 120, 110);
 /// Caption window size and its inset from the bottom of the monitor.
 const BAR_SIZE: Vec2 = Vec2::new(900.0, 120.0);
 const BOTTOM_INSET: f32 = 80.0;
@@ -38,9 +45,27 @@ const BOX_ALPHA: f32 = 170.0;
 pub struct CaptionState {
     recent: VecDeque<(String, f64)>,
     live: String,
+    /// A just-recognized command utterance, highlighted until it expires.
+    flash: Option<Flash>,
+    /// `seq` of the last command utterance already flashed.
+    flashed_seq: u64,
     changed_at: f64,
     /// Whether anything at all has been shown since the last clear.
     showing: bool,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct Flash {
+    spoken: String,
+    is_error: bool,
+    at: f64,
+}
+
+/// One run of caption text and whether it is a highlighted command.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Piece {
+    Plain(String),
+    Command { spoken: String, is_error: bool },
 }
 
 impl CaptionState {
@@ -65,11 +90,55 @@ impl CaptionState {
             changed = true;
         }
         self.recent.retain(|(_, at)| now - *at < LINGER_SECS);
+        if self
+            .flash
+            .as_ref()
+            .is_some_and(|f| now - f.at >= FLASH_SECS)
+        {
+            self.flash = None;
+        }
         if changed {
             self.changed_at = now;
             self.showing = true;
         }
         changed
+    }
+
+    /// Highlights a newly recognized command utterance (once per `seq`).
+    /// Returns whether it was new.
+    fn flash_command(&mut self, heard: Option<&HeardCommand>, now: f64) -> bool {
+        let Some(h) = heard.filter(|h| h.seq > self.flashed_seq) else {
+            return false;
+        };
+        self.flashed_seq = h.seq;
+        self.flash = Some(Flash {
+            spoken: h.spoken.clone(),
+            is_error: h.is_error,
+            at: now,
+        });
+        self.changed_at = now;
+        self.showing = true;
+        true
+    }
+
+    /// The caption in order: lingering sentences, live text, then the
+    /// flashed command (it replaced the live text when it finalized).
+    fn pieces(&self) -> Vec<Piece> {
+        let mut out: Vec<Piece> = Vec::new();
+        let mut plain: Vec<&str> = self.recent.iter().map(|(t, _)| t.as_str()).collect();
+        if !self.live.is_empty() {
+            plain.push(&self.live);
+        }
+        if !plain.is_empty() {
+            out.push(Piece::Plain(plain.join(" ")));
+        }
+        if let Some(f) = &self.flash {
+            out.push(Piece::Command {
+                spoken: f.spoken.clone(),
+                is_error: f.is_error,
+            });
+        }
+        out
     }
 
     /// Forgets everything (captions turned off, or listening stopped).
@@ -79,12 +148,15 @@ impl CaptionState {
         self.showing = false;
     }
 
+    /// Plain rendering of [`Self::pieces`] (tests and emptiness checks).
     fn text(&self) -> String {
-        let mut parts: Vec<&str> = self.recent.iter().map(|(t, _)| t.as_str()).collect();
-        if !self.live.is_empty() {
-            parts.push(&self.live);
-        }
-        parts.join(" ")
+        self.pieces()
+            .iter()
+            .map(|p| match p {
+                Piece::Plain(t) | Piece::Command { spoken: t, .. } => t.as_str(),
+            })
+            .collect::<Vec<_>>()
+            .join(" ")
     }
 
     /// Opacity in `0..=1` for `now`; zero once the fade has finished.
@@ -108,6 +180,9 @@ pub fn draw(app: &mut PromptBoxApp, ctx: &egui::Context) {
     if app.captions_enabled() && (app.is_live() || app.is_demo_running()) {
         let parts = app.core().doc().caption_parts();
         app.caption.update(&parts, now);
+        // Clone the small record: `core()` borrows the whole app.
+        let heard = app.core().heard_command().cloned();
+        app.caption.flash_command(heard.as_ref(), now);
     } else {
         app.caption.clear();
     }
@@ -125,7 +200,7 @@ pub fn draw(app: &mut PromptBoxApp, ctx: &egui::Context) {
         (monitor.x - BAR_SIZE.x) / 2.0,
         monitor.y - BAR_SIZE.y - BOTTOM_INSET,
     );
-    let text = app.caption.text();
+    let pieces = app.caption.pieces();
 
     ctx.show_viewport_immediate(
         ViewportId::from_hash_of("caption-overlay"),
@@ -141,21 +216,43 @@ pub fn draw(app: &mut PromptBoxApp, ctx: &egui::Context) {
             .with_resizable(false)
             .with_inner_size(BAR_SIZE)
             .with_position(pos),
-        |ui, _class| paint(ui, &text, alpha),
+        |ui, _class| paint(ui, &pieces, alpha),
     );
 }
 
-/// Paints the text in a rounded translucent box, clipped so the tail of a
-/// long utterance stays visible.
-fn paint(ui: &mut egui::Ui, text: &str, alpha: f32) {
+/// Paints the pieces in a rounded translucent box, commands in colour,
+/// clipped so the tail of a long utterance stays visible.
+fn paint(ui: &mut egui::Ui, pieces: &[Piece], alpha: f32) {
     let painter = ui.painter();
     let rect = ui.max_rect();
-    let galley = painter.layout(
-        text.to_owned(),
-        FontId::proportional(FONT_SIZE),
-        Color32::WHITE.gamma_multiply(alpha),
-        rect.width() - 2.0 * PADDING,
-    );
+    let mut job = LayoutJob::default();
+    job.wrap.max_width = rect.width() - 2.0 * PADDING;
+    let font = FontId::proportional(FONT_SIZE);
+    for (i, piece) in pieces.iter().enumerate() {
+        let (text, color) = match piece {
+            Piece::Plain(t) => (t.as_str(), Color32::WHITE),
+            Piece::Command {
+                spoken,
+                is_error: false,
+            } => (spoken.as_str(), FLASH_COLOR),
+            Piece::Command { spoken, .. } => (spoken.as_str(), FLASH_ERROR_COLOR),
+        };
+        let text = if i == 0 {
+            text.to_owned()
+        } else {
+            format!(" {text}")
+        };
+        job.append(
+            &text,
+            0.0,
+            TextFormat {
+                font_id: font.clone(),
+                color: color.gamma_multiply(alpha),
+                ..Default::default()
+            },
+        );
+    }
+    let galley = painter.layout_job(job);
     let visible_h = rect.height() - PADDING;
     let overflow = (galley.size().y - visible_h).max(0.0);
     let box_rect = egui::Rect::from_center_size(
@@ -238,5 +335,43 @@ mod tests {
         assert_eq!(s.changed_at, 4.0);
         s.update(&parts("Third point.", ""), 4.0 + LINGER_SECS + 0.1);
         assert_eq!(s.text(), "", "everything expired");
+    }
+
+    #[test]
+    fn recognized_command_flashes_once_then_leaves() {
+        let mut s = CaptionState::default();
+        s.update(&parts("First point.", "zevro sen"), 0.0);
+        // The Final carried a command: the live text is gone from the
+        // document, and the core reports what was heard.
+        s.update(&parts("First point.", ""), 1.0);
+        let heard = HeardCommand {
+            seq: 1,
+            spoken: "Zevro send.".into(),
+            is_error: false,
+        };
+        assert!(s.flash_command(Some(&heard), 1.0));
+        assert_eq!(
+            s.pieces(),
+            vec![
+                Piece::Plain("First point.".into()),
+                Piece::Command {
+                    spoken: "Zevro send.".into(),
+                    is_error: false
+                }
+            ]
+        );
+        assert!(!s.flash_command(Some(&heard), 1.1), "same seq is not new");
+        s.update(&parts("First point.", ""), 1.0 + FLASH_SECS + 0.1);
+        assert_eq!(s.pieces(), vec![Piece::Plain("First point.".into())]);
+        let unknown = HeardCommand {
+            seq: 2,
+            spoken: "Zevro banana".into(),
+            is_error: true,
+        };
+        assert!(s.flash_command(Some(&unknown), 5.0));
+        assert!(matches!(
+            s.pieces().last(),
+            Some(Piece::Command { is_error: true, .. })
+        ));
     }
 }

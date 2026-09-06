@@ -13,6 +13,7 @@ const SAMPLE_RATE_MS: u64 = 16; // samples per millisecond
 pub const DEMO_SCRIPT: &[&str] = &[
     "Add a Pydantic model for the DynamoDB item and use a conditional expression so the write isn't overwritten.",
     "Then move that validation down into the service layer.",
+    "Zevro new paragraph.",
     "Add unit tests for both cases before you refactor anything.",
 ];
 

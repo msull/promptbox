@@ -56,6 +56,17 @@ pub enum SessionStatus {
     Error(String),
 }
 
+/// A finalized utterance that was taken as a voice command.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HeardCommand {
+    /// Increments per command utterance so the UI can spot a new one.
+    pub seq: u64,
+    /// The utterance as whisper finalized it ("Zevro send").
+    pub spoken: String,
+    /// The command was not understood (or was aborted).
+    pub is_error: bool,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Toast {
     pub text: String,
@@ -270,6 +281,9 @@ pub struct AppCore {
     status: SessionStatus,
     active_session: Option<SessionId>,
     toast: Option<Toast>,
+    /// Most recent utterance that carried a voice command, for the UI to
+    /// acknowledge (the caption overlay flashes it).
+    heard_command: Option<HeardCommand>,
     pending: Option<Pending>,
     projects: Vec<Project>,
     selected_project: usize,
@@ -308,6 +322,7 @@ impl AppCore {
             status: SessionStatus::Idle,
             active_session: None,
             toast: None,
+            heard_command: None,
             pending: None,
             projects: default_projects(),
             selected_project: 0,
@@ -349,6 +364,12 @@ impl AppCore {
     #[must_use]
     pub fn toast(&self) -> Option<&Toast> {
         self.toast.as_ref()
+    }
+
+    /// The latest command utterance; compare `seq` to notice a new one.
+    #[must_use]
+    pub fn heard_command(&self) -> Option<&HeardCommand> {
+        self.heard_command.as_ref()
     }
 
     #[must_use]
@@ -766,6 +787,14 @@ impl AppCore {
                     log::info!("heard {text:?}");
                 } else {
                     log::info!("heard {text:?} -> {commands:?}");
+                    let is_error = commands
+                        .iter()
+                        .any(|c| matches!(c, Command::Unknown(_) | Command::Aborted));
+                    self.heard_command = Some(HeardCommand {
+                        seq: self.heard_command.as_ref().map_or(1, |h| h.seq + 1),
+                        spoken: text.trim().to_owned(),
+                        is_error,
+                    });
                 }
                 SpeechEvent {
                     kind: SpeechEventKind::Final {
@@ -2255,6 +2284,30 @@ mod tests {
         // Undo restores the deleted sentence, not the command words.
         core.dispatch(AppAction::Undo, Clock::at(11));
         assert_eq!(core.doc().committed(), "First sentence.");
+    }
+
+    #[test]
+    fn heard_command_records_each_command_utterance() {
+        let mut core = AppCore::new();
+        core.dispatch(AppAction::SessionStarted(1), Clock::at(0));
+        assert!(core.heard_command().is_none());
+        final_at(&mut core, 1, 1, "Just dictation.", 1);
+        assert!(
+            core.heard_command().is_none(),
+            "plain dictation is not a command"
+        );
+        final_at(&mut core, 2, 2, "Zevro undo", 2);
+        let h = core.heard_command().unwrap().clone();
+        assert_eq!(
+            (h.seq, h.spoken.as_str(), h.is_error),
+            (1, "Zevro undo", false)
+        );
+        final_at(&mut core, 3, 3, "Zevro banana", 3);
+        let h = core.heard_command().unwrap().clone();
+        assert_eq!(
+            (h.seq, h.spoken.as_str(), h.is_error),
+            (2, "Zevro banana", true)
+        );
     }
 
     #[test]
