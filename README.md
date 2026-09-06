@@ -88,9 +88,10 @@ project picker and Debug menu so the window can sit small in a corner.
 **CC** shows what you are saying as closed captions: a translucent bar at
 the bottom of the screen Prompt Box is on, floating above every window and
 ignoring the mouse, so you can keep working in another app and still see
-what is coming in. It shows the last committed sentence followed by the
-live (provisional) text, holds for a moment after the text stops changing,
-then fades out. The choice persists. It is drawn in its own borderless
+what is coming in. It shows the live (provisional) text preceded by the
+last one or two finalized sentences, which linger for several seconds so
+they can still be read while the next utterance is being spoken. The bar
+holds for a moment after the text stops changing, then fades out. The choice persists. It is drawn in its own borderless
 viewport, which is why the main window is created transparent (its panels
 paint their own opaque backgrounds).
 

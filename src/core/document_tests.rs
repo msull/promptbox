@@ -1077,14 +1077,21 @@ fn provisional_range_matches_rendered() {
     assert_eq!(&r[pr], " wörld");
 }
 
+fn parts(c: &str, l: &str) -> CaptionParts {
+    CaptionParts {
+        committed: c.into(),
+        live: l.into(),
+    }
+}
+
 #[test]
-fn caption_is_last_committed_sentence_plus_live_span() {
+fn caption_parts_are_last_committed_sentence_and_live_span() {
     let mut doc = Document::new();
-    assert_eq!(doc.caption(), "");
+    assert_eq!(doc.caption_parts(), parts("", ""));
     doc.load("First point. Second point.");
     assert_eq!(
-        doc.caption(),
-        "Second point.",
+        doc.caption_parts(),
+        parts("Second point.", ""),
         "no live span: sentence at the cursor"
     );
     doc.set_active_session(1);
@@ -1100,7 +1107,7 @@ fn caption_is_last_committed_sentence_plus_live_span() {
         },
     ))
     .unwrap();
-    assert_eq!(doc.caption(), "Second point. third po");
+    assert_eq!(doc.caption_parts(), parts("Second point.", "third po"));
     doc.apply_event(&ev(
         1,
         3,
@@ -1111,7 +1118,7 @@ fn caption_is_last_committed_sentence_plus_live_span() {
         },
     ))
     .unwrap();
-    assert_eq!(doc.caption(), "Third point.");
+    assert_eq!(doc.caption_parts(), parts("Third point.", ""));
     let mut empty = Document::new();
     empty.set_active_session(1);
     empty
@@ -1129,8 +1136,8 @@ fn caption_is_last_committed_sentence_plus_live_span() {
         ))
         .unwrap();
     assert_eq!(
-        empty.caption(),
-        "hello",
+        empty.caption_parts(),
+        parts("", "hello"),
         "nothing committed: live text alone"
     );
 }

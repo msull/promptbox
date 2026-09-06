@@ -32,6 +32,15 @@ pub struct ProvisionalSpan {
     pub text: String,
 }
 
+/// See [`Document::caption_parts`].
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct CaptionParts {
+    /// Last committed sentence before the live span (empty if none).
+    pub committed: String,
+    /// Provisional text (empty if no utterance is in progress).
+    pub live: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EditSource {
     Voice {
@@ -228,22 +237,21 @@ impl Document {
         }
     }
 
-    /// What a closed-caption overlay should show: the last committed
-    /// sentence before the live span, then the provisional text. With no
-    /// live span it is the sentence ending at the cursor, so the caption
-    /// keeps showing a just-finalized utterance until the next one starts.
+    /// Pieces for a closed-caption overlay: the last committed sentence
+    /// before the live span, and the provisional text. With no live span
+    /// the sentence is the one ending at the cursor, so a just-finalized
+    /// utterance is still reported until the next one starts.
     #[must_use]
-    pub fn caption(&self) -> String {
+    pub fn caption_parts(&self) -> CaptionParts {
         let (end, live) = match &self.provisional {
             Some(p) => (p.anchor, p.text.trim()),
             None => (self.cursor, ""),
         };
         let last = crate::core::text::last_sentence_range(&self.committed, end)
             .map_or("", |r| self.committed[r].trim());
-        match (last.is_empty(), live.is_empty()) {
-            (true, _) => live.to_owned(),
-            (false, true) => last.to_owned(),
-            (false, false) => format!("{last} {live}"),
+        CaptionParts {
+            committed: last.to_owned(),
+            live: live.to_owned(),
         }
     }
 
