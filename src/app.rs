@@ -708,21 +708,19 @@ impl PromptBoxApp {
         true
     }
 
-    /// Project vocabulary plus example command phrases, so whisper is
-    /// primed to hear the trigger word and the grammar after it.
+    /// Project vocabulary plus the command grammar's words, so whisper
+    /// spells them reliably. The trigger word is deliberately absent:
+    /// whisper echoes its prompt on silence and noise, and a prompt full of
+    /// "Zevro ..." made it hallucinate trigger phrases. Trigger renderings
+    /// are tolerated by the phonetic matching instead. (The hint is read
+    /// once, when the engine loads.)
     fn vocabulary_hint(&self) -> String {
-        use std::fmt::Write as _;
-        let mut trigger = self.core.trigger().to_owned();
-        if let Some(first) = trigger.get_mut(0..1) {
-            first.make_ascii_uppercase();
-        }
         let mut hint = self.core.project().recognition_terms().join(", ");
         if !hint.is_empty() {
             hint.push_str(". ");
         }
-        let _ = write!(
-            hint,
-            "{trigger} delete sentence. {trigger} DP. {trigger} new paragraph. {trigger} send. {trigger} copy. {trigger} enhance, confirm."
+        hint.push_str(
+            "delete sentence, delete paragraph, new paragraph, send, copy, enhance, confirm.",
         );
         hint
     }

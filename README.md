@@ -131,9 +131,13 @@ never matches. Command words tolerate a one-letter slip ("sand" counts as
 "send"). A trigger utterance is a command only, so a garbled tail after the
 command is ignored. Anything after the trigger that
 matches nothing is dropped and reported in a toast, never typed into the
-prompt. Example command phrases are added to whisper's prompt so the trigger
-and grammar are recognized reliably. The trigger word can be changed in
-Settings.
+prompt. The command words are added to whisper's prompt so they are spelled
+reliably; the trigger word is not, because whisper echoes its prompt on
+silence and noise, which produced phantom "Zevro" commands. Each finalized
+utterance and the commands extracted from it are logged at info level
+("heard ..."), so `RUST_LOG=promptbox=info` shows what noise turns into.
+The trigger word can be changed in Settings (the prompt is built when the
+engine loads, so restart the app after changing it).
 
 ## Projects
 

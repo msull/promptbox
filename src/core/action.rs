@@ -760,6 +760,13 @@ impl AppCore {
             } => {
                 let extracted = commands::extract(text, &self.trigger);
                 commands = extracted.commands;
+                // Evidence for tuning the trigger: what whisper finalized
+                // and what the extractor made of it.
+                if commands.is_empty() {
+                    log::info!("heard {text:?}");
+                } else {
+                    log::info!("heard {text:?} -> {commands:?}");
+                }
                 SpeechEvent {
                     kind: SpeechEventKind::Final {
                         utterance: *utterance,
