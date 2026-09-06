@@ -87,9 +87,12 @@ project picker and Debug menu so the window can sit small in a corner.
 
 ## Voice commands
 
-Say the trigger word **Zevro** followed by a command, at the end of a
-sentence or on its own: "…move it into the service layer. Zevro delete
-sentence." The **Commands** button shows this list in the app.
+Pause, then say the trigger word **Zevro** followed by a command as its own
+utterance: "…move it into the service layer." (pause) "Zevro delete
+sentence." The trigger only counts as the first word of an utterance;
+anywhere else it is ordinary dictation, so a mis-heard "zebra" in the middle
+of a long passage never discards it. The **Commands** button shows this list
+in the app.
 
 | Say | Does |
 |---|---|
@@ -115,8 +118,8 @@ Recognition of the trigger is deliberately loose. Real microphones render it
 as "Zebro", "Zebra", "Zev Bro", or "zebbro", so it is matched on a consonant
 skeleton (b/v merged, vowels dropped), optionally across two words; "zero"
 never matches. Command words tolerate a one-letter slip ("sand" counts as
-"send"). An utterance that starts with the trigger is a command only, so a
-garbled tail after the command is ignored. Anything after the trigger that
+"send"). A trigger utterance is a command only, so a garbled tail after the
+command is ignored. Anything after the trigger that
 matches nothing is dropped and reported in a toast, never typed into the
 prompt. Example command phrases are added to whisper's prompt so the trigger
 and grammar are recognized reliably. The trigger word can be changed in

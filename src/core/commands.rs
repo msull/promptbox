@@ -1,10 +1,14 @@
-//! Deterministic voice-command extraction. A trigger word ("Zevro") opens
-//! the command channel; the phrase after it is matched against a fixed
-//! grammar. Commands are extracted only from *final* recognition text, so
-//! successive provisional hypotheses can never fire one twice. Everything
-//! outside trigger + command phrase stays dictation, with its original
-//! casing and punctuation. Words after a trigger that match nothing are
-//! dropped and reported, never dictated: the speaker meant a command.
+//! Deterministic voice-command extraction. A trigger word ("Zevro") at the
+//! *start* of an utterance opens the command channel; the phrase after it
+//! is matched against a fixed grammar. The trigger is recognized only as
+//! the first word: a trigger-like word later in an utterance is ordinary
+//! dictation, so a long passage can never be discarded by a mis-heard
+//! "zebra" in the middle of it. Commands are extracted only from *final*
+//! recognition text, so successive provisional hypotheses can never fire
+//! one twice. An utterance that does not start with the trigger is kept
+//! verbatim as dictation, with its original casing and punctuation. Words
+//! after a trigger that match nothing are dropped and reported, never
+//! dictated: the speaker meant a command.
 //!
 //! Recognition is imperfect. Command words are compared with a
 //! one-substitution tolerance for words of four letters or more ("sand"
@@ -12,10 +16,10 @@
 //! vowels dropped, doubled letters collapsed), optionally across two
 //! adjacent tokens, because real speech produced "Zebro", "Zebra",
 //! "Zev Bro" and "zebbro" for "Zevro". "zero" keys to "zr" and never
-//! matches. An utterance that *starts* with the trigger is treated as a
-//! command only: words after the command phrase are ignored, so a garbled
-//! "delete laughs" still deletes the sentence. Saying "abort" anywhere after
-//! the trigger cancels that command before it takes effect.
+//! matches. A trigger utterance is a command only: words after the command
+//! phrase are ignored, so a garbled "delete laughs" still deletes the
+//! sentence. Saying "abort" anywhere after the trigger cancels that command
+//! before it takes effect.
 
 use std::ops::Range;
 
@@ -297,74 +301,43 @@ fn normalize(word: &str) -> String {
 }
 
 /// Splits `text` into dictation and commands using `trigger` (compared
-/// case- and punctuation-insensitively).
+/// case- and punctuation-insensitively). Only an utterance whose first
+/// word is the trigger is a command; anything else is dictation as spoken.
 #[must_use]
 pub fn extract(text: &str, trigger: &str) -> Extraction {
-    let trigger_key = phonetic_key(&normalize(trigger));
     let tokens = tokenize(text);
-    let command_only = tokens
-        .first()
-        .is_some_and(|_| trigger_span(&tokens, 0, &trigger_key).is_some());
-    let mut dictation_parts: Vec<&str> = Vec::new();
-    let mut commands = Vec::new();
-    let mut keep_from = 0usize; // byte offset where uncommitted dictation starts
-    let mut i = 0;
-    while i < tokens.len() {
-        let Some(span) = trigger_span(&tokens, i, &trigger_key) else {
-            i += 1;
-            continue;
+    let Some(span) = leading_trigger_span(&tokens, trigger) else {
+        return Extraction {
+            dictation: text.trim().to_owned(),
+            commands: Vec::new(),
         };
-        let before = text[keep_from..tokens[i].range.start].trim();
-        if !before.is_empty() {
-            dictation_parts.push(before);
-        }
-        let after = i + span;
-        let segment_end = next_trigger(&tokens, after, &trigger_key);
-        if let Some(k) = (after..segment_end).find(|&k| close_enough(ABORT_WORD, &tokens[k].norm)) {
-            commands.push(Command::Aborted);
-            let last = if command_only { segment_end - 1 } else { k };
-            keep_from = tokens[last].range.end;
-            i = last + 1;
-            continue;
-        }
-        let (cmd, mut used) = match_command(text, &tokens[after..], &trigger_key);
-        if command_only && !matches!(cmd, Command::Unknown(_)) {
-            // Whole utterance is a command: swallow any garbled tail up to
-            // the next trigger instead of dictating it.
-            used = next_trigger(&tokens, after, &trigger_key) - after;
-        }
-        commands.push(cmd);
-        // Index of the last consumed token (the trigger itself if nothing
-        // followed it).
-        let last = if used == 0 {
-            after - 1
-        } else {
-            after + used - 1
-        };
-        keep_from = tokens[last].range.end;
-        i = last + 1;
-    }
-    let tail = text[keep_from..].trim();
-    if !tail.is_empty() {
-        dictation_parts.push(tail);
-    }
+    };
+    let after = &tokens[span..];
+    let command = if after.iter().any(|t| close_enough(ABORT_WORD, &t.norm)) {
+        Command::Aborted
+    } else {
+        match_command(text, after)
+    };
     Extraction {
-        dictation: dictation_parts.join(" "),
-        commands,
+        dictation: String::new(),
+        commands: vec![command],
     }
 }
 
-/// Index of the next trigger token at or after `from`, or `tokens.len()`.
-fn next_trigger(tokens: &[Token], from: usize, trigger_key: &str) -> usize {
-    (from..tokens.len())
-        .find(|&j| trigger_span(tokens, j, trigger_key).is_some())
-        .unwrap_or(tokens.len())
+/// How many leading tokens the trigger spans, if the utterance starts
+/// with it.
+fn leading_trigger_span(tokens: &[Token], trigger: &str) -> Option<usize> {
+    if tokens.is_empty() {
+        return None;
+    }
+    let key = phonetic_key(&normalize(trigger));
+    trigger_span(tokens, 0, &key)
 }
 
-/// Returns the command and how many tokens were consumed after the
-/// trigger. Unknown consumes everything up to the next trigger so the
-/// words are reported, not dictated.
-fn match_command(text: &str, after: &[Token], trigger_key: &str) -> (Command, usize) {
+/// The command spoken after the trigger. Enhance and Tool carry the rest
+/// of the utterance verbatim; anything that matches no grammar phrase is
+/// Unknown with every word reported, so nothing is dictated.
+fn match_command(text: &str, after: &[Token]) -> Command {
     let mut best: Option<(Command, usize)> = None;
     for (phrase, cmd) in GRAMMAR {
         let n = phrase.len();
@@ -378,40 +351,36 @@ fn match_command(text: &str, after: &[Token], trigger_key: &str) -> (Command, us
             best = Some((cmd.clone(), n));
         }
     }
-    if let Some((cmd @ (Command::Enhance(_) | Command::Tool(_)), _)) = &best {
-        // Everything up to the next trigger is the request, verbatim.
-        let n = next_trigger(after, 0, trigger_key);
-        let payload = if n > 1 {
-            text[after[1].range.start..after[n - 1].range.end].trim()
-        } else {
-            ""
-        };
-        let cmd = match cmd {
-            Command::Tool(_) => Command::Tool(payload.to_owned()),
-            _ => Command::Enhance(payload.to_owned()),
-        };
-        return (cmd, n);
+    match best {
+        Some((cmd @ (Command::Enhance(_) | Command::Tool(_)), _)) => {
+            // Everything after the command word is the request, verbatim.
+            let payload = match (after.get(1), after.last()) {
+                (Some(first), Some(last)) => text[first.range.start..last.range.end].trim(),
+                _ => "",
+            };
+            match cmd {
+                Command::Tool(_) => Command::Tool(payload.to_owned()),
+                _ => Command::Enhance(payload.to_owned()),
+            }
+        }
+        Some((cmd, _)) => cmd,
+        None => Command::Unknown(
+            after
+                .iter()
+                .map(|t| t.norm.as_str())
+                .collect::<Vec<_>>()
+                .join(" "),
+        ),
     }
-    best.unwrap_or_else(|| {
-        let n = next_trigger(after, 0, trigger_key);
-        let heard = after[..n]
-            .iter()
-            .map(|t| t.norm.as_str())
-            .collect::<Vec<_>>()
-            .join(" ");
-        (Command::Unknown(heard), n)
-    })
 }
 
-/// Byte offset of the first trigger word in a provisional hypothesis, so
-/// the UI can highlight the command being spoken before the Final lands.
+/// Byte offset of the trigger word in a provisional hypothesis (always 0,
+/// since only a leading trigger counts), so the UI can highlight the
+/// command being spoken before the Final lands.
 #[must_use]
 pub fn pending_command_offset(partial: &str, trigger: &str) -> Option<usize> {
-    let key = phonetic_key(&normalize(trigger));
     let tokens = tokenize(partial);
-    (0..tokens.len())
-        .find(|&i| trigger_span(&tokens, i, &key).is_some())
-        .map(|i| tokens[i].range.start)
+    leading_trigger_span(&tokens, trigger).map(|_| tokens[0].range.start)
 }
 
 #[cfg(test)]
@@ -424,7 +393,7 @@ mod tests {
 
     #[test]
     fn extraction_cases() {
-        use Command::{Clear, DeleteSentence, NewParagraph, Send, StopListening, Undo, Unknown};
+        use Command::{DeleteSentence, NewParagraph, Send, StopListening, Unknown};
         let cases: Vec<(&str, &str, &str, Vec<Command>)> = vec![
             (
                 "no command",
@@ -433,10 +402,10 @@ mod tests {
                 vec![],
             ),
             (
-                "trailing command",
+                "trigger after the first word is dictation",
                 "Move this into the service layer. Zevro delete sentence.",
-                "Move this into the service layer.",
-                vec![DeleteSentence],
+                "Move this into the service layer. Zevro delete sentence.",
+                vec![],
             ),
             ("only a command", "Zevro send", "", vec![Send]),
             ("case and punctuation", "zevro, SEND!", "", vec![Send]),
@@ -453,28 +422,22 @@ mod tests {
                 vec![NewParagraph],
             ),
             (
-                "mid-sentence command keeps the tail",
-                "Start. Zevro new paragraph Then continue here.",
-                "Start. Then continue here.",
-                vec![NewParagraph],
+                "a mis-heard trigger mid-passage never discards the passage",
+                "We saw a zebra, then a zebro, and Zev bro said hi. Zevro send.",
+                "We saw a zebra, then a zebro, and Zev bro said hi. Zevro send.",
+                vec![],
             ),
             (
-                "two commands",
-                "First part zevro undo second part Zevro clear.",
-                "First part second part",
-                vec![Undo, Clear],
+                "one command per utterance; a second trigger is part of it",
+                "Zevro banana zevro send",
+                "",
+                vec![Unknown("banana zevro send".into())],
             ),
             (
                 "unknown drops and reports the rest",
                 "Zevro banana split",
                 "",
                 vec![Unknown("banana split".into())],
-            ),
-            (
-                "unknown stops at the next trigger",
-                "Zevro banana zevro send",
-                "",
-                vec![Unknown("banana".into()), Send],
             ),
             (
                 "one-letter slip in a command word",
@@ -554,10 +517,10 @@ mod tests {
             ("Zebro delete abort.", "", vec![Aborted]),
             (
                 "Keep this. Zevro send abort and carry on",
-                "Keep this. and carry on",
-                vec![Aborted],
+                "Keep this. Zevro send abort and carry on",
+                vec![],
             ),
-            ("Zevro send abort zevro send", "", vec![Aborted, Send]),
+            ("Zevro send abort zevro send", "", vec![Aborted]),
             ("Zevro send", "", vec![Send]),
         ];
         for (heard, dictation, want) in cases {
@@ -577,13 +540,10 @@ mod tests {
     }
 
     #[test]
-    fn command_only_utterance_swallows_garbled_tail_but_mid_sentence_keeps_it() {
+    fn command_utterance_swallows_garbled_tail() {
         let got = x("Zevro new paragraph then continue");
         assert_eq!(got.commands, vec![Command::NewParagraph]);
         assert_eq!(got.dictation, "");
-        let got = x("Keep this. Zevro new paragraph then continue");
-        assert_eq!(got.commands, vec![Command::NewParagraph]);
-        assert_eq!(got.dictation, "Keep this. then continue");
     }
 
     #[test]
@@ -619,8 +579,8 @@ mod tests {
 
     #[test]
     fn last_suffix_selects_the_before_last_sentence_variants() {
-        let got = extract("Fix it. Zevro new line last", DEFAULT_TRIGGER);
-        assert_eq!(got.dictation, "Fix it.");
+        let got = extract("Zevro new line last", DEFAULT_TRIGGER);
+        assert_eq!(got.dictation, "");
         assert_eq!(got.commands, vec![Command::NewlineBeforeLast]);
         let got = extract("Zevro new paragraph last.", DEFAULT_TRIGGER);
         assert_eq!(got.commands, vec![Command::NewParagraphBeforeLast]);
@@ -636,8 +596,8 @@ mod tests {
             got.commands,
             vec![Command::Enhance("make it shorter, confirm.".into())]
         );
-        let got = extract("Fix the bug. Zevro enhance", DEFAULT_TRIGGER);
-        assert_eq!(got.dictation, "Fix the bug.");
+        let got = extract("Zevro enhance", DEFAULT_TRIGGER);
+        assert_eq!(got.dictation, "");
         assert_eq!(got.commands, vec![Command::Enhance(String::new())]);
         let got = extract("Zevro enhance never mind abort", DEFAULT_TRIGGER);
         assert_eq!(got.commands, vec![Command::Aborted]);
@@ -673,18 +633,26 @@ mod tests {
 
     #[test]
     fn custom_trigger_word() {
-        let got = extract("hello computer copy", "Computer");
-        assert_eq!(got.dictation, "hello");
+        let got = extract("Computer, copy", "Computer");
+        assert_eq!(got.dictation, "");
         assert_eq!(got.commands, vec![Command::Copy]);
+        let got = extract("hello computer copy", "Computer");
+        assert_eq!(got.dictation, "hello computer copy");
+        assert!(got.commands.is_empty());
     }
 
     #[test]
     fn pending_command_offset_points_at_the_trigger() {
         assert_eq!(
             pending_command_offset("Move this. Zevro dele", DEFAULT_TRIGGER),
-            Some(11)
+            None,
+            "only a leading trigger is a command"
         );
         assert_eq!(pending_command_offset("Zevro", DEFAULT_TRIGGER), Some(0));
+        assert_eq!(
+            pending_command_offset("  Zevro dele", DEFAULT_TRIGGER),
+            Some(2)
+        );
         assert_eq!(
             pending_command_offset("no trigger here", DEFAULT_TRIGGER),
             None

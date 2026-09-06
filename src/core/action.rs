@@ -1871,7 +1871,8 @@ mod tests {
             Clock::at(4),
         );
         assert!(core.doc().rendered().ends_with("Open you never"));
-        final_at(&mut core, 3, 1, "Open You Never Sheets. Zevro new line", 5);
+        final_at(&mut core, 3, 1, "Open You Never Sheets.", 5);
+        final_at(&mut core, 4, 2, "Zevro new line", 5);
         assert_eq!(
             core.doc().committed(),
             "you never sheets stays as typed. Open Univer Sheets.\n"
@@ -2194,6 +2195,34 @@ mod tests {
             core.doc().rendered(),
             "First sentence. Second one. Zevro del"
         );
+        assert!(
+            core.pending_command_range().is_none(),
+            "a trigger after the first word is dictation, not a command"
+        );
+        final_at(&mut core, 5, 2, "Second one. Zevro del.", 5);
+        assert_eq!(
+            core.doc().committed(),
+            "First sentence. Second one. Zevro del."
+        );
+        core.dispatch(AppAction::Undo, Clock::at(6));
+        assert_eq!(core.doc().committed(), "First sentence.");
+        core.dispatch(
+            speech(1, 6, SpeechEventKind::VoiceStarted { utterance: 3 }),
+            Clock::at(7),
+        );
+        core.dispatch(
+            speech(
+                1,
+                7,
+                SpeechEventKind::Partial {
+                    utterance: 3,
+                    revision: 1,
+                    text: "Zevro del".into(),
+                },
+            ),
+            Clock::at(8),
+        );
+        assert_eq!(core.doc().rendered(), "First sentence. Zevro del");
         let r = core.pending_command_range().unwrap();
         assert_eq!(
             &core.doc().rendered()[r],
@@ -2202,23 +2231,23 @@ mod tests {
         );
         let final_ev = speech(
             1,
-            5,
+            8,
             SpeechEventKind::Final {
-                utterance: 2,
-                text: "Second one. Zevro delete sentence.".into(),
+                utterance: 3,
+                text: "Zevro delete sentence.".into(),
                 confidence: None,
             },
         );
-        core.dispatch(final_ev.clone(), Clock::at(5));
-        assert_eq!(core.doc().committed(), "First sentence.");
+        core.dispatch(final_ev.clone(), Clock::at(9));
+        assert_eq!(core.doc().committed(), "");
         assert_eq!(toast_text(&core), "Voice: delete sentence");
         // A duplicate Final (same sequence) is rejected by the document, so
         // the command does not run a second time.
-        core.dispatch(final_ev, Clock::at(6));
-        assert_eq!(core.doc().committed(), "First sentence.");
+        core.dispatch(final_ev, Clock::at(10));
+        assert_eq!(core.doc().committed(), "");
         // Undo restores the deleted sentence, not the command words.
-        core.dispatch(AppAction::Undo, Clock::at(7));
-        assert_eq!(core.doc().committed(), "First sentence. Second one.");
+        core.dispatch(AppAction::Undo, Clock::at(11));
+        assert_eq!(core.doc().committed(), "First sentence.");
     }
 
     #[test]
