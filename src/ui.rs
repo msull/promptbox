@@ -622,7 +622,7 @@ fn project_picker(app: &mut PromptBoxApp, ui: &mut Ui) {
     }
 }
 
-/// Settings, Pin, Dock, Debug, and Listen/Stop, right-aligned.
+/// Settings, Pin, CC, Dock, Debug, and Listen/Stop, right-aligned.
 fn window_controls(app: &mut PromptBoxApp, ui: &mut Ui, compact: bool) {
     if ui
         .selectable_label(app.show_settings, "⚙")
@@ -638,6 +638,14 @@ fn window_controls(app: &mut PromptBoxApp, ui: &mut Ui, compact: bool) {
         .changed()
     {
         app.set_always_on_top(ui.ctx(), pinned);
+    }
+    let mut captions = app.captions_enabled();
+    if ui
+        .toggle_value(&mut captions, "CC")
+        .on_hover_text("Captions: show what you are saying at the bottom of the screen")
+        .changed()
+    {
+        app.set_captions_enabled(captions);
     }
     if ui
         .button("Dock")

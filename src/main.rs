@@ -18,7 +18,11 @@ fn main() -> eframe::Result {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([760.0, 520.0])
             .with_min_inner_size([280.0, 200.0])
-            .with_icon(icon),
+            .with_icon(icon)
+            // Transparency support is decided once, here, for every
+            // viewport; the caption overlay depends on it. The main
+            // window's panels paint opaque backgrounds regardless.
+            .with_transparent(true),
         ..Default::default()
     };
 
@@ -30,6 +34,10 @@ fn main() -> eframe::Result {
             // Dev aid: `PROMPTBOX_AUTOSTART=1 cargo run` begins listening at launch.
             if std::env::var_os("PROMPTBOX_AUTOSTART").is_some() {
                 app.start_listening();
+            }
+            // `PROMPTBOX_DEMO=1` plays the fake dictation script at launch.
+            if std::env::var_os("PROMPTBOX_DEMO").is_some() {
+                app.start_demo(false);
             }
             Ok(Box::new(app))
         }),

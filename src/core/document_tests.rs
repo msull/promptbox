@@ -1076,3 +1076,61 @@ fn provisional_range_matches_rendered() {
     let pr = doc.provisional_range().unwrap();
     assert_eq!(&r[pr], " wörld");
 }
+
+#[test]
+fn caption_is_last_committed_sentence_plus_live_span() {
+    let mut doc = Document::new();
+    assert_eq!(doc.caption(), "");
+    doc.load("First point. Second point.");
+    assert_eq!(
+        doc.caption(),
+        "Second point.",
+        "no live span: sentence at the cursor"
+    );
+    doc.set_active_session(1);
+    doc.apply_event(&ev(1, 1, SpeechEventKind::VoiceStarted { utterance: 1 }))
+        .unwrap();
+    doc.apply_event(&ev(
+        1,
+        2,
+        SpeechEventKind::Partial {
+            utterance: 1,
+            revision: 1,
+            text: "third po".into(),
+        },
+    ))
+    .unwrap();
+    assert_eq!(doc.caption(), "Second point. third po");
+    doc.apply_event(&ev(
+        1,
+        3,
+        SpeechEventKind::Final {
+            utterance: 1,
+            text: "Third point.".into(),
+            confidence: None,
+        },
+    ))
+    .unwrap();
+    assert_eq!(doc.caption(), "Third point.");
+    let mut empty = Document::new();
+    empty.set_active_session(1);
+    empty
+        .apply_event(&ev(1, 1, SpeechEventKind::VoiceStarted { utterance: 1 }))
+        .unwrap();
+    empty
+        .apply_event(&ev(
+            1,
+            2,
+            SpeechEventKind::Partial {
+                utterance: 1,
+                revision: 1,
+                text: "hello".into(),
+            },
+        ))
+        .unwrap();
+    assert_eq!(
+        empty.caption(),
+        "hello",
+        "nothing committed: live text alone"
+    );
+}

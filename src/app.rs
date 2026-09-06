@@ -118,6 +118,8 @@ pub struct PromptBoxApp {
     pub show_settings: bool,
     /// The project editor, while open.
     pub project_editor: Option<ProjectEditor>,
+    /// Text and timing of the on-screen caption overlay.
+    pub caption: crate::caption::CaptionState,
     /// Text in the AI instruction box under the prompt.
     pub ai_instruction: String,
     /// Draft values in the settings window until saved.
@@ -229,6 +231,7 @@ impl PromptBoxApp {
             show_commands: false,
             show_settings: false,
             project_editor: None,
+            caption: crate::caption::CaptionState::default(),
             ai_instruction: String::new(),
             settings_draft: Settings::default(),
             rewriter: None,
@@ -432,6 +435,19 @@ impl PromptBoxApp {
         self.settings.always_on_top = on;
         self.window_level_applied = false;
         self.apply_window_level(ctx);
+        if let Err(e) = self.history.save_settings(&self.settings) {
+            log::warn!("could not save settings: {e}");
+        }
+    }
+
+    #[must_use]
+    pub fn captions_enabled(&self) -> bool {
+        self.settings.captions
+    }
+
+    /// Shows or hides the on-screen caption overlay and remembers the choice.
+    pub fn set_captions_enabled(&mut self, on: bool) {
+        self.settings.captions = on;
         if let Err(e) = self.history.save_settings(&self.settings) {
             log::warn!("could not save settings: {e}");
         }
@@ -969,6 +985,14 @@ impl eframe::App for PromptBoxApp {
         }
         self.sync_dock_badge();
         crate::ui::draw(self, ui);
+        crate::caption::draw(self, &ui.ctx().clone());
+    }
+
+    /// Fully transparent: the window's panels paint their own opaque
+    /// backgrounds, and the caption overlay needs a transparent backbuffer
+    /// (which eframe enables for every viewport from the root's settings).
+    fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {
+        [0.0, 0.0, 0.0, 0.0]
     }
 }
 

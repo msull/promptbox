@@ -28,6 +28,7 @@ pub enum ThemeChoice {
 
 /// Small persisted UI preferences.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[allow(clippy::struct_excessive_bools)] // independent on/off preferences
 pub struct Settings {
     /// Keep the window above other windows.
     #[serde(default)]
@@ -52,6 +53,9 @@ pub struct Settings {
     /// Name of the selected project; empty means the first one.
     #[serde(default)]
     pub project: String,
+    /// Show the live utterance as closed captions at the bottom of the screen.
+    #[serde(default = "default_true")]
+    pub captions: bool,
 }
 
 fn default_true() -> bool {
@@ -69,6 +73,7 @@ impl Default for Settings {
             type_on_send: true,
             submit_after_paste: true,
             project: String::new(),
+            captions: true,
         }
     }
 }

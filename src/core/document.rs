@@ -228,6 +228,25 @@ impl Document {
         }
     }
 
+    /// What a closed-caption overlay should show: the last committed
+    /// sentence before the live span, then the provisional text. With no
+    /// live span it is the sentence ending at the cursor, so the caption
+    /// keeps showing a just-finalized utterance until the next one starts.
+    #[must_use]
+    pub fn caption(&self) -> String {
+        let (end, live) = match &self.provisional {
+            Some(p) => (p.anchor, p.text.trim()),
+            None => (self.cursor, ""),
+        };
+        let last = crate::core::text::last_sentence_range(&self.committed, end)
+            .map_or("", |r| self.committed[r].trim());
+        match (last.is_empty(), live.is_empty()) {
+            (true, _) => live.to_owned(),
+            (false, true) => last.to_owned(),
+            (false, false) => format!("{last} {live}"),
+        }
+    }
+
     /// Range of the provisional span in rendered coordinates.
     #[must_use]
     pub fn provisional_range(&self) -> Option<Range<usize>> {

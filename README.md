@@ -85,6 +85,15 @@ it to the next screen corner on each click (top-right, bottom-right,
 bottom-left, top-left). Below about 460 px wide the top bar hides the
 project picker and Debug menu so the window can sit small in a corner.
 
+**CC** shows what you are saying as closed captions: a translucent bar at
+the bottom of the screen Prompt Box is on, floating above every window and
+ignoring the mouse, so you can keep working in another app and still see
+what is coming in. It shows the last committed sentence followed by the
+live (provisional) text, holds for a moment after the text stops changing,
+then fades out. The choice persists. It is drawn in its own borderless
+viewport, which is why the main window is created transparent (its panels
+paint their own opaque backgrounds).
+
 ## Voice commands
 
 Pause, then say the trigger word **Zevro** followed by a command as its own
@@ -268,6 +277,7 @@ The icon is `assets/PromptBox.svg`; `scripts/icon.sh` rebuilds the `.icns`
 (rendering through AppKit, so the background stays transparent).
 
 Dev aids: `PROMPTBOX_AUTOSTART=1` starts listening at launch;
+`PROMPTBOX_DEMO=1` plays the scripted dictation at launch;
 `PROMPTBOX_FAKE_MIC=/path/to/16k-mono.wav` feeds a WAV through the real
 capture path instead of the microphone (the spike's fixtures work); the
 **Debug** menu runs scripted dictation without any model.
@@ -300,6 +310,7 @@ src/adapters/
   clipboard.rs, persistence.rs, fake_speech.rs
 src/app.rs               PromptBoxApp: owns core + adapters + recognizer + mic; runs effects
 src/ui.rs                egui drawing and input -> actions (edit diffing, shortcuts)
+src/caption.rs           closed-caption overlay viewport (hold/fade timing, painting)
 tests/ui.rs              headless flows via egui_kittest with fake adapters
 tests/whisper.rs         real engine over a spike fixture (ignored by default)
 tests/openai_live.rs     real OpenAI call (ignored by default)
