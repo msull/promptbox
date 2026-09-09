@@ -926,13 +926,23 @@ fn editor(app: &mut PromptBoxApp, ui: &mut Ui) {
         ui.fonts_mut(|f| f.layout_job(job))
     };
 
-    let output = TextEdit::multiline(&mut text)
-        .id(editor_id)
-        .hint_text("Speak or type your prompt…")
-        .desired_width(f32::INFINITY)
-        .desired_rows(12)
-        .layouter(&mut layouter)
-        .show(ui);
+    // A long prompt outgrows the window: scroll it, and let the editor fill
+    // the panel so clicking anywhere below the text still focuses it.
+    // egui keeps the cursor in view inside a scroll area, so dictation
+    // landing at the end scrolls down with it.
+    let output = egui::ScrollArea::vertical()
+        .id_salt("editor-scroll")
+        .auto_shrink(false)
+        .show(ui, |ui| {
+            TextEdit::multiline(&mut text)
+                .id(editor_id)
+                .hint_text("Speak or type your prompt…")
+                .desired_width(f32::INFINITY)
+                .min_size(ui.available_size())
+                .layouter(&mut layouter)
+                .show(ui)
+        })
+        .inner;
     let response = output.response.response.clone().labelled_by(label.id);
 
     if text != rendered {
