@@ -16,9 +16,13 @@ VERSION=$(grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)".*/\1/')
 
 cargo build --locked --release
 
+# The build output may live outside the project (a shared target-dir in
+# ~/.cargo/config.toml or CARGO_TARGET_DIR), so ask cargo where it went.
+TARGET=$(cargo metadata --format-version 1 --no-deps | sed 's/.*"target_directory":"\([^"]*\)".*/\1/')
+
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
-cp target/release/promptbox "$APP/Contents/MacOS/promptbox"
+cp "$TARGET/release/promptbox" "$APP/Contents/MacOS/promptbox"
 cat > "$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
