@@ -32,7 +32,9 @@ recognizer may revise earlier words in it until the utterance finalizes.
 Copy puts the prompt on the clipboard and keeps it. Send copies and clears,
 but only after both the clipboard write and the history save succeed; if
 either fails the prompt stays and a toast says why. The clear after Send is
-undoable.
+undoable. Save… (⌘S) opens a save dialog, in your home folder by default,
+and writes the prompt there exactly as shown; the prompt stays, so a spec
+or a note can be filed without leaving the editor.
 
 ### Sending into another app
 
@@ -57,6 +59,7 @@ switched off in Settings.
 | ⌘L | Start / stop listening |
 | ⌘Return | Send (copy and clear) |
 | ⌘⇧C | Copy without clearing |
+| ⌘S | Save the prompt to a file (the prompt stays) |
 | ⌘Z / ⌘⇧Z | Undo / redo |
 | ⌘⌫ | Delete last sentence |
 | ⌘⇧⌫ | Delete last paragraph |
@@ -326,6 +329,8 @@ src/adapters/
 src/app.rs               Editor (one prompt: core + adapters, runs effects); PromptBoxApp (standalone window)
 src/voice.rs             Voice: the process-wide recognizer, mic, backlog, demo, captions state
 src/ports/sink.rs        PromptSink: where Send goes when a host embeds the editor
+src/ports/saver.rs       FileSaver: the save dialog behind Save…
+src/adapters/saver.rs    NativeSaver (rfd save panel + write) and FakeSaver
 src/ui.rs                egui drawing and input -> actions (edit diffing, shortcuts)
 src/caption.rs           closed-caption overlay viewport (hold/fade timing, painting)
 tests/ui.rs              headless flows via egui_kittest with fake adapters

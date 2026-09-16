@@ -20,6 +20,7 @@ use crate::core::{AppAction, AppCore, Clock, Delivery, Effect, Project};
 use crate::ports::ai::Rewriter;
 use crate::ports::clipboard::Clipboard;
 use crate::ports::history::{HistoryStore, Settings, ThemeChoice};
+use crate::ports::saver::FileSaver;
 use crate::ports::sink::PromptSink;
 use crate::ports::tools::ToolRunner;
 use crate::ports::typist::Typist;
@@ -116,6 +117,10 @@ pub struct Editor {
     /// Drawn inside another app: no window chrome, no settings window,
     /// and shortcuts only while the editor has focus.
     embedded: bool,
+    /// Shows the save dialog and writes the file; `None` hides Save.
+    saver: Option<Box<dyn FileSaver>>,
+    /// Where the save dialog opens; the home directory when unset.
+    save_dir: Option<PathBuf>,
 }
 
 impl Editor {
@@ -157,6 +162,8 @@ impl Editor {
             sink: None,
             host_api_key: None,
             embedded: false,
+            saver: None,
+            save_dir: None,
         };
         editor.settings_draft = editor.settings.clone();
         editor.rebuild_rewriter();
@@ -193,6 +200,21 @@ impl Editor {
     pub fn set_api_key(&mut self, key: Option<String>) {
         self.host_api_key = key.filter(|k| !k.trim().is_empty());
         self.rebuild_rewriter();
+    }
+
+    /// Installs the save dialog; without one the Save button is not drawn.
+    pub fn set_saver(&mut self, saver: Box<dyn FileSaver>) {
+        self.saver = Some(saver);
+    }
+
+    #[must_use]
+    pub fn can_save(&self) -> bool {
+        self.saver.is_some()
+    }
+
+    /// Where the save dialog opens (a host passes its project root).
+    pub fn set_save_dir(&mut self, dir: Option<PathBuf>) {
+        self.save_dir = dir;
     }
 
     /// Embedded editors draw no window chrome or settings window and take
@@ -496,6 +518,17 @@ impl Editor {
                 Some(sink) => sink.deliver(&text),
                 None => Err("no host to send to".into()),
             }),
+            Effect::SaveToFile(text) => {
+                let seed = self
+                    .save_dir
+                    .clone()
+                    .or_else(|| directories::UserDirs::new().map(|d| d.home_dir().to_path_buf()))
+                    .unwrap_or_else(|| PathBuf::from("."));
+                AppAction::FileSaveFinished(match &mut self.saver {
+                    Some(saver) => saver.save(&seed, &text),
+                    None => Err("saving is not available here".into()),
+                })
+            }
             Effect::SaveHistory(prompt) => AppAction::HistorySaveFinished {
                 id: prompt.id,
                 result: self.history.save_sent(&prompt),
@@ -512,13 +545,25 @@ impl Editor {
                 id,
                 result: self.typist.paste_and_submit(submit),
             },
+            Effect::AiRewrite(_) | Effect::ChooseTool(_) | Effect::RunTool { .. } => {
+                self.run_worker_effect(effect);
+                return None;
+            }
+        };
+        Some(result)
+    }
+
+    /// The effects that run on a worker thread and report back through
+    /// the next frame's pump.
+    fn run_worker_effect(&mut self, effect: Effect) {
+        match effect {
             Effect::AiRewrite(request) => {
                 let Some(rewriter) = self.rewriter.clone() else {
                     self.dispatch(AppAction::AiRewriteFinished {
                         id: request.id,
                         result: Err("no OpenAI API key; set one in Settings".into()),
                     });
-                    return None;
+                    return;
                 };
                 self.spawn_worker("ai-rewrite", move || {
                     let t = Instant::now();
@@ -537,7 +582,6 @@ impl Editor {
                         result,
                     }
                 });
-                return None;
             }
             Effect::ChooseTool(request) => {
                 let Some(rewriter) = self.rewriter.clone() else {
@@ -545,7 +589,7 @@ impl Editor {
                         id: request.id,
                         result: Err("no OpenAI API key; set one in Settings".into()),
                     });
-                    return None;
+                    return;
                 };
                 self.spawn_worker("ai-tool-choice", move || {
                     let result = rewriter.choose_tool(&request);
@@ -563,7 +607,6 @@ impl Editor {
                         result,
                     }
                 });
-                return None;
             }
             Effect::RunTool { id, tool, input } => {
                 let runner = self.tool_runner.clone();
@@ -584,10 +627,9 @@ impl Editor {
                         result,
                     }
                 });
-                return None;
             }
-        };
-        Some(result)
+            _ => unreachable!("not a worker effect"),
+        }
     }
 
     /// Opens the project editor on a copy of the current list.
@@ -720,6 +762,8 @@ impl PromptBoxApp {
             Box::new(FileStore::new(FileStore::default_dir())),
         );
         app.editor.set_typist(Box::new(SystemTypist::default()));
+        app.editor
+            .set_saver(Box::new(crate::adapters::saver::NativeSaver));
         app.editor
             .set_tools_dir(Some(FileStore::default_dir().join("tools")));
         app.editor.reload_tools();

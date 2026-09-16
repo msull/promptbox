@@ -12,6 +12,7 @@ use promptbox::PromptBoxApp;
 use promptbox::adapters::clipboard::FakeClipboard;
 use promptbox::adapters::openai::FakeRewriter;
 use promptbox::adapters::persistence::MemoryStore;
+use promptbox::adapters::saver::FakeSaver;
 use promptbox::adapters::sink::FakeSink;
 use promptbox::adapters::typist::FakeTypist;
 use promptbox::core::SessionStatus;
@@ -794,4 +795,72 @@ fn set_text_replaces_the_prompt_in_one_undo_step() {
         .dispatch(promptbox::core::AppAction::Undo);
     harness.run_steps(2);
     assert_eq!(harness.state().core().doc().committed(), "typed by hand");
+}
+
+// ---- saving to a file ---------------------------------------------------
+
+#[test]
+fn save_asks_where_seeded_at_the_save_dir_and_keeps_the_prompt() {
+    use egui::{Key, Modifiers};
+    let mut harness = harness();
+    assert!(
+        harness.query_by_label("Save…").is_none(),
+        "no saver, no button"
+    );
+    let saver = FakeSaver {
+        choose: Some("/tmp/proj/notes/todo.md".into()),
+        ..FakeSaver::default()
+    };
+    harness
+        .state_mut()
+        .editor
+        .set_saver(Box::new(saver.clone()));
+    harness
+        .state_mut()
+        .editor
+        .set_save_dir(Some("/tmp/proj".into()));
+    type_prompt(&mut harness, "- [ ] write the spec");
+    harness.get_by_label("Save…").click();
+    harness.run_steps(2);
+    harness.get_by_label("Saved to todo.md");
+    {
+        let files = saver.saved.lock().unwrap();
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].seed, std::path::PathBuf::from("/tmp/proj"));
+        assert_eq!(files[0].text, "- [ ] write the spec");
+    }
+    assert_eq!(
+        harness.state().core().doc().committed(),
+        "- [ ] write the spec",
+        "saving keeps the prompt"
+    );
+    // ⌘S does the same.
+    harness.key_press_modifiers(Modifiers::COMMAND, Key::S);
+    harness.run_steps(2);
+    assert_eq!(saver.saved.lock().unwrap().len(), 2);
+}
+
+#[test]
+fn a_cancelled_or_failed_save_says_so_and_keeps_the_prompt() {
+    let mut harness = harness();
+    harness
+        .state_mut()
+        .editor
+        .set_saver(Box::new(FakeSaver::default()));
+    type_prompt(&mut harness, "hello");
+    harness.get_by_label("Save…").click();
+    harness.run_steps(2);
+    assert!(
+        harness.query_by_label_contains("Saved to").is_none(),
+        "cancel is silent"
+    );
+    let failing = FakeSaver {
+        fail_with: Some("read-only volume".into()),
+        ..FakeSaver::default()
+    };
+    harness.state_mut().editor.set_saver(Box::new(failing));
+    harness.get_by_label("Save…").click();
+    harness.run_steps(2);
+    harness.get_by_label_contains("read-only volume");
+    assert_eq!(harness.state().core().doc().committed(), "hello");
 }

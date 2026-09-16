@@ -6,6 +6,7 @@
 //! another action. Time is passed in, never read, so tests never sleep.
 
 use std::ops::Range;
+use std::path::PathBuf;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use crate::core::commands::{self, Command, DEFAULT_TRIGGER};
@@ -94,6 +95,11 @@ pub enum AppAction {
     AcknowledgeStatus,
     CopyPrompt,
     SendPrompt,
+    /// Write the prompt to a file the user picks; the prompt stays.
+    SavePrompt,
+    /// The file was written (`Some(path)`), the dialog cancelled (`None`),
+    /// or the write failed.
+    FileSaveFinished(Result<Option<PathBuf>, String>),
     ClipboardWriteFinished(Result<(), String>),
     /// Result of handing the prompt to the host on Send (`Delivery::Host`).
     DeliverFinished(Result<(), String>),
@@ -226,6 +232,8 @@ pub enum Effect {
     /// Hand the prompt to the host instead of the clipboard (Send only,
     /// under `Delivery::Host`).
     Deliver(String),
+    /// Ask where to save the prompt and write it there.
+    SaveToFile(String),
     SaveHistory(SentPrompt),
     SaveDraft(String),
     /// A voice command asked to stop the microphone.
@@ -605,6 +613,25 @@ impl AppCore {
                 };
             }
             AppAction::CopyPrompt => self.begin_copy_or_send(PendingKind::Copy, now, &mut effects),
+            AppAction::SavePrompt => {
+                self.doc.commit_provisional();
+                let text = self.doc.committed().to_owned();
+                if text.trim().is_empty() {
+                    self.show_toast("Nothing to save".to_owned(), false, now.mono);
+                } else {
+                    effects.push(Effect::SaveToFile(text));
+                }
+            }
+            AppAction::FileSaveFinished(Ok(Some(path))) => {
+                let name = path.file_name().map_or_else(
+                    || path.display().to_string(),
+                    |n| n.to_string_lossy().into_owned(),
+                );
+                self.show_toast(format!("Saved to {name}"), false, now.mono);
+            }
+            AppAction::FileSaveFinished(Err(e)) => {
+                self.show_toast(format!("Save failed: {e}. Prompt kept."), true, now.mono);
+            }
             AppAction::SendPrompt => {
                 self.preview_open = false;
                 self.begin_copy_or_send(PendingKind::Send, now, &mut effects);
@@ -718,6 +745,7 @@ impl AppCore {
             }
             AppAction::DraftSaveFinished(Ok(()))
             | AppAction::DraftLoaded(Ok(None))
+            | AppAction::FileSaveFinished(Ok(None))
             | AppAction::ProjectsSaveFinished(Ok(())) => {}
             AppAction::AiCleanUp => {
                 self.begin_rewrite(CLEAN_UP_INSTRUCTION.to_owned(), now, &mut effects);

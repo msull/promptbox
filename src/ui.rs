@@ -24,6 +24,7 @@ const DELETE_PARAGRAPH: KeyboardShortcut =
 const NEW_PARAGRAPH: KeyboardShortcut = KeyboardShortcut::new(Modifiers::SHIFT, Key::Enter);
 const CLEAR: KeyboardShortcut =
     KeyboardShortcut::new(Modifiers::COMMAND.plus(Modifiers::SHIFT), Key::K);
+const SAVE: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key::S);
 
 /// What one draw of the editor works on: the editor, the voice runtime
 /// (bound to this editor or not), and, for the standalone window, its
@@ -545,6 +546,7 @@ const BINDINGS: &[Binding] = &[
     (&DELETE_SENTENCE, || AppAction::DeleteSentence),
     (&CLEAR, || AppAction::ClearPrompt),
     (&COPY_ALL, || AppAction::CopyPrompt),
+    (&SAVE, || AppAction::SavePrompt),
     (&SEND, || AppAction::SendPrompt),
     (&NEW_PARAGRAPH, || AppAction::NewParagraph),
 ];
@@ -890,6 +892,14 @@ fn bottom_bar(f: &mut Frame<'_>, ui: &mut Ui) {
         if ai_busy {
             ui.spinner();
             ui.label(RichText::new("AI is rewriting…").weak());
+        }
+        if f.editor.can_save()
+            && ui
+                .add_enabled(!busy, egui::Button::new("Save…"))
+                .on_hover_text("Write the prompt to a file you pick; the prompt stays (⌘S)")
+                .clicked()
+        {
+            f.editor.dispatch(AppAction::SavePrompt);
         }
         if ui
             .add_enabled(!busy, egui::Button::new("Copy"))
