@@ -930,7 +930,6 @@ fn bottom_bar(f: &mut Frame<'_>, ui: &mut Ui) {
 }
 
 fn editor(f: &mut Frame<'_>, ui: &mut Ui) {
-    let label = ui.label(RichText::new("Prompt").small().weak());
     let rendered = f.editor.core().doc().rendered();
     let provisional = f.editor.core().doc().provisional_range();
     let pending_command = f.editor.core().pending_command_range();
@@ -1008,7 +1007,11 @@ fn editor(f: &mut Frame<'_>, ui: &mut Ui) {
                 .show(ui)
         })
         .inner;
-    let response = output.response.response.clone().labelled_by(label.id);
+    // The field has no visible label (it would cost a row), only an
+    // accessible name.
+    let response = output.response.response.clone();
+    ui.ctx()
+        .accesskit_node_builder(response.id, |node| node.set_label("Prompt"));
 
     if text != rendered {
         let (range, replacement) = diff_edit(&rendered, &text);
