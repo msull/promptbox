@@ -325,6 +325,7 @@ src/adapters/
   clipboard.rs, persistence.rs, fake_speech.rs
 src/app.rs               Editor (one prompt: core + adapters, runs effects); PromptBoxApp (standalone window)
 src/voice.rs             Voice: the process-wide recognizer, mic, backlog, demo, captions state
+src/ports/sink.rs        PromptSink: where Send goes when a host embeds the editor
 src/ui.rs                egui drawing and input -> actions (edit diffing, shortcuts)
 src/caption.rs           closed-caption overlay viewport (hold/fade timing, painting)
 tests/ui.rs              headless flows via egui_kittest with fake adapters

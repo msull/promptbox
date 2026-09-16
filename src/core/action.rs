@@ -95,6 +95,8 @@ pub enum AppAction {
     CopyPrompt,
     SendPrompt,
     ClipboardWriteFinished(Result<(), String>),
+    /// Result of handing the prompt to the host on Send (`Delivery::Host`).
+    DeliverFinished(Result<(), String>),
     HistorySaveFinished {
         id: u64,
         result: Result<(), String>,
@@ -221,6 +223,9 @@ fn join_spoken(a: &str, b: &str) -> String {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Effect {
     WriteClipboard(String),
+    /// Hand the prompt to the host instead of the clipboard (Send only,
+    /// under `Delivery::Host`).
+    Deliver(String),
     SaveHistory(SentPrompt),
     SaveDraft(String),
     /// A voice command asked to stop the microphone.
@@ -268,6 +273,17 @@ enum TypingStage {
     Done(Result<(), String>),
 }
 
+/// Where Send puts the prompt. Copy always uses the clipboard.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Delivery {
+    /// The clipboard, then optionally pasted into the focused app.
+    #[default]
+    Clipboard,
+    /// Straight to the host that embeds Prompt Box; the clipboard is
+    /// untouched and nothing is typed anywhere.
+    Host,
+}
+
 /// Whether Send should also paste into the focused app, decided per send.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TypingPolicy {
@@ -309,6 +325,7 @@ pub struct AppCore {
     ai_prompt_tokens: u64,
     ai_completion_tokens: u64,
     typing: TypingPolicy,
+    delivery: Delivery,
 }
 
 impl Default for AppCore {
@@ -350,6 +367,7 @@ impl AppCore {
                 enabled: false,
                 submit: true,
             },
+            delivery: Delivery::Clipboard,
         }
     }
 
@@ -438,6 +456,16 @@ impl AppCore {
 
     /// Set by the app each frame: typing is only sensible when another app
     /// is focused and the user has enabled it.
+    #[must_use]
+    pub fn delivery(&self) -> Delivery {
+        self.delivery
+    }
+
+    /// Where Send puts the prompt from now on.
+    pub fn set_delivery(&mut self, delivery: Delivery) {
+        self.delivery = delivery;
+    }
+
     pub fn set_typing_policy(&mut self, policy: TypingPolicy) {
         self.typing = policy;
     }
@@ -581,7 +609,9 @@ impl AppCore {
                 self.preview_open = false;
                 self.begin_copy_or_send(PendingKind::Send, now, &mut effects);
             }
-            AppAction::ClipboardWriteFinished(result) => {
+            // A delivery takes the clipboard's place in the pending record:
+            // it is the "stored" half a Send waits for.
+            AppAction::ClipboardWriteFinished(result) | AppAction::DeliverFinished(result) => {
                 if let Some(p) = &mut self.pending {
                     p.clipboard = Some(result);
                 }
@@ -1218,11 +1248,16 @@ impl AppCore {
             sent_at: now.wall,
             project: self.projects[self.selected_project].name.clone(),
         };
-        effects.push(Effect::WriteClipboard(text));
+        let to_host = kind == PendingKind::Send && self.delivery == Delivery::Host;
+        if to_host {
+            effects.push(Effect::Deliver(text));
+        } else {
+            effects.push(Effect::WriteClipboard(text));
+        }
         if kind == PendingKind::Send {
             effects.push(Effect::SaveHistory(snapshot.clone()));
         }
-        let typing = if kind == PendingKind::Send && self.typing.enabled {
+        let typing = if kind == PendingKind::Send && self.typing.enabled && !to_host {
             TypingStage::Wanted
         } else {
             TypingStage::NotWanted
@@ -1287,7 +1322,7 @@ impl AppCore {
                 self.mark_dirty(now);
                 self.recent.insert(0, p.snapshot);
                 self.recent.truncate(RECENT_LIMIT);
-                let msg = if typed {
+                let msg = if typed || self.delivery == Delivery::Host {
                     "Prompt sent"
                 } else {
                     "Prompt copied"

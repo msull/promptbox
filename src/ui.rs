@@ -47,16 +47,16 @@ impl Frame<'_> {
 
 pub fn draw(f: &mut Frame<'_>, ui: &mut Ui) {
     handle_shortcuts(f, ui);
-    egui::Panel::top("top").show(ui, |ui| top_bar(f, ui));
+    egui::Panel::top(f.editor.id("top")).show(ui, |ui| top_bar(f, ui));
     // Outermost first: the notification strip sits below the buttons and
     // keeps its height whether or not a toast is showing, so nothing above
     // it reflows when one appears.
-    egui::Panel::bottom("notifications")
+    egui::Panel::bottom(f.editor.id("notifications"))
         .exact_size(NOTIFICATION_STRIP_HEIGHT)
         .resizable(false)
         .show(ui, |ui| notification_strip(f, ui));
-    egui::Panel::bottom("bottom").show(ui, |ui| bottom_bar(f, ui));
-    egui::Panel::bottom("ai-row").show(ui, |ui| ai_row(f, ui));
+    egui::Panel::bottom(f.editor.id("bottom")).show(ui, |ui| bottom_bar(f, ui));
+    egui::Panel::bottom(f.editor.id("ai-row")).show(ui, |ui| ai_row(f, ui));
     egui::CentralPanel::default().show(ui, |ui| editor(f, ui));
     commands_popup(f, ui);
     settings_window(f, ui);
@@ -73,10 +73,12 @@ fn projects_window(f: &mut Frame<'_>, ui: &mut Ui) {
     let mut open = true;
     let mut action = None;
     egui::Window::new("Projects")
+        .id(app.id("projects-window"))
         .open(&mut open)
         .collapsible(false)
         .default_width(520.0)
         .show(ui.ctx(), |ui| {
+            let name_id = app.id("project-name");
             let Some(editor) = app.project_editor.as_mut() else {
                 return;
             };
@@ -104,7 +106,7 @@ fn projects_window(f: &mut Frame<'_>, ui: &mut Ui) {
                     });
                 });
                 ui.separator();
-                project_form(ui, &mut editor.drafts[editor.selected]);
+                project_form(ui, &mut editor.drafts[editor.selected], name_id);
             });
             if let Some(err) = &editor.error {
                 ui.colored_label(egui::Color32::from_rgb(0xd0, 0x40, 0x40), err);
@@ -132,14 +134,14 @@ fn projects_window(f: &mut Frame<'_>, ui: &mut Ui) {
 }
 
 /// The fields of one project in the editor.
-fn project_form(ui: &mut Ui, draft: &mut crate::app::ProjectDraft) {
+fn project_form(ui: &mut Ui, draft: &mut crate::app::ProjectDraft, name_id: egui::Id) {
     ui.vertical(|ui| {
         ui.set_width(340.0);
         ui.horizontal(|ui| {
             let label = ui.label("Name");
             ui.add(
                 TextEdit::singleline(&mut draft.name)
-                    .id(egui::Id::new("project-name"))
+                    .id(name_id)
                     .desired_width(f32::INFINITY),
             )
             .labelled_by(label.id);
@@ -235,11 +237,12 @@ fn ai_row(f: &mut Frame<'_>, ui: &mut Ui) {
         };
         let label = ui.label(RichText::new("AI").small().weak());
         let width = ui.available_width() - 60.0;
+        let ai_id = f.editor.id("ai-instruction");
         let response = ui
             .add_enabled(
                 !busy && available,
                 TextEdit::singleline(&mut f.editor.ai_instruction)
-                    .id(egui::Id::new("ai-instruction"))
+                    .id(ai_id)
                     .hint_text(hint)
                     .desired_width(width),
             )
@@ -393,12 +396,13 @@ fn settings_window(f: &mut Frame<'_>, ui: &mut Ui) {
     let mut save = false;
     let mut open_projects = false;
     egui::Window::new("Settings")
+        .id(f.editor.id("settings-window"))
         .open(&mut open)
         .collapsible(false)
         .resizable(false)
         .default_width(380.0)
         .show(ui.ctx(), |ui| {
-            egui::Grid::new("settings-grid")
+            egui::Grid::new(f.editor.id("settings-grid"))
                 .num_columns(2)
                 .spacing([12.0, 8.0])
                 .show(ui, |ui| {
@@ -489,6 +493,7 @@ fn commands_popup(f: &mut Frame<'_>, ui: &mut Ui) {
     }
     let mut open = true;
     egui::Window::new("Voice commands")
+        .id(f.editor.id("commands-window"))
         .open(&mut open)
         .collapsible(false)
         .resizable(false)
@@ -500,7 +505,7 @@ fn commands_popup(f: &mut Frame<'_>, ui: &mut Ui) {
                  Say \"abort\" after the trigger to cancel a command before it runs."
             ));
             ui.add_space(6.0);
-            egui::Grid::new("commands-grid")
+            egui::Grid::new(f.editor.id("commands-grid"))
                 .num_columns(2)
                 .spacing([18.0, 4.0])
                 .striped(true)
@@ -529,21 +534,32 @@ fn commands_popup(f: &mut Frame<'_>, ui: &mut Ui) {
     f.editor.show_commands = open;
 }
 
-/// Shortcuts are consumed before the text box sees them, so the document's
-/// single history owns undo/redo rather than egui's internal one.
+/// The shortcuts, consumed before the text box sees them so the document's
+/// single history owns undo/redo rather than egui's internal one. Order
+/// matters: more modifiers first so ⌘⇧Z is not eaten by ⌘Z.
+type Binding = (&'static KeyboardShortcut, fn() -> AppAction);
+const BINDINGS: &[Binding] = &[
+    (&REDO, || AppAction::Redo),
+    (&UNDO, || AppAction::Undo),
+    (&DELETE_PARAGRAPH, || AppAction::DeleteParagraph),
+    (&DELETE_SENTENCE, || AppAction::DeleteSentence),
+    (&CLEAR, || AppAction::ClearPrompt),
+    (&COPY_ALL, || AppAction::CopyPrompt),
+    (&SEND, || AppAction::SendPrompt),
+    (&NEW_PARAGRAPH, || AppAction::NewParagraph),
+];
+
 fn handle_shortcuts(f: &mut Frame<'_>, ui: &mut Ui) {
-    // Order matters: more modifiers first so ⌘⇧Z is not eaten by ⌘Z.
-    type Binding = (&'static KeyboardShortcut, fn() -> AppAction);
-    const BINDINGS: &[Binding] = &[
-        (&REDO, || AppAction::Redo),
-        (&UNDO, || AppAction::Undo),
-        (&DELETE_PARAGRAPH, || AppAction::DeleteParagraph),
-        (&DELETE_SENTENCE, || AppAction::DeleteSentence),
-        (&CLEAR, || AppAction::ClearPrompt),
-        (&COPY_ALL, || AppAction::CopyPrompt),
-        (&SEND, || AppAction::SendPrompt),
-        (&NEW_PARAGRAPH, || AppAction::NewParagraph),
-    ];
+    // Embedded, the host owns the keyboard except while the prompt or
+    // the AI box has focus; standalone, the window is ours.
+    if f.editor.is_embedded() {
+        let prompt = f.editor.id("prompt-editor");
+        let ai = f.editor.id("ai-instruction");
+        let focused = ui.memory(|m| m.has_focus(prompt) || m.has_focus(ai));
+        if !focused {
+            return;
+        }
+    }
     let mut actions = Vec::new();
     let toggle = ui.input_mut(|i| {
         for (shortcut, make) in BINDINGS {
@@ -600,7 +616,7 @@ fn top_bar(f: &mut Frame<'_>, ui: &mut Ui) {
             window_controls(f, ui, compact);
             ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
                 status_indicator(f, ui);
-                if !compact {
+                if !compact && !f.editor.is_embedded() {
                     project_picker(f, ui);
                 }
             });
@@ -623,7 +639,7 @@ fn project_picker(f: &mut Frame<'_>, ui: &mut Ui) {
         .map(|p| p.name.clone())
         .collect();
     let mut choice = selected;
-    egui::ComboBox::from_id_salt("project")
+    egui::ComboBox::from_id_salt(f.editor.id("project"))
         .selected_text(&names[selected])
         .show_ui(ui, |ui| {
             for (i, name) in names.iter().enumerate() {
@@ -648,10 +664,11 @@ fn project_picker(f: &mut Frame<'_>, ui: &mut Ui) {
 
 /// Settings, Pin, CC, Dock, Debug, and Listen/Stop, right-aligned.
 fn window_controls(f: &mut Frame<'_>, ui: &mut Ui, compact: bool) {
-    if ui
-        .selectable_label(f.editor.show_settings, "⚙")
-        .on_hover_text("Settings: OpenAI key, model, trigger word")
-        .clicked()
+    if !f.editor.is_embedded()
+        && ui
+            .selectable_label(f.editor.show_settings, "⚙")
+            .on_hover_text("Settings: OpenAI key, model, trigger word")
+            .clicked()
     {
         f.editor.show_settings = !f.editor.show_settings;
     }
@@ -682,8 +699,8 @@ fn window_controls(f: &mut Frame<'_>, ui: &mut Ui, compact: bool) {
     {
         window.dock_next_corner(ui.ctx());
     }
-    if compact {
-        listen_controls(f, ui, true);
+    if compact || f.editor.is_embedded() {
+        listen_controls(f, ui, compact);
         return;
     }
     ui.menu_button("Debug", |ui| {
@@ -881,9 +898,13 @@ fn bottom_bar(f: &mut Frame<'_>, ui: &mut Ui) {
         {
             f.editor.dispatch(AppAction::CopyPrompt);
         }
+        let send_hint = match f.editor.core().delivery() {
+            crate::core::Delivery::Clipboard => "Copy to clipboard and clear (⌘Return)",
+            crate::core::Delivery::Host => "Send and clear (⌘Return)",
+        };
         if ui
             .add_enabled(!busy, egui::Button::new("Send →"))
-            .on_hover_text("Copy to clipboard and clear (⌘Return)")
+            .on_hover_text(send_hint)
             .clicked()
         {
             f.editor.dispatch(AppAction::SendPrompt);
@@ -909,8 +930,8 @@ fn editor(f: &mut Frame<'_>, ui: &mut Ui) {
     // (a dictated sentence committed, undo, draft restore), push it into
     // egui's text state; otherwise egui's stale click position would be
     // read back below and every later utterance would anchor there.
-    let editor_id = egui::Id::new("prompt-editor");
-    let synced_key = egui::Id::new("prompt-editor-synced-cursor");
+    let editor_id = f.editor.id("prompt-editor");
+    let synced_key = f.editor.id("prompt-editor-synced-cursor");
     let doc_cursor = f.editor.core().doc().cursor();
     let last_synced: Option<usize> = ui.data(|d| d.get_temp(synced_key));
     if last_synced != Some(doc_cursor) {
@@ -965,7 +986,7 @@ fn editor(f: &mut Frame<'_>, ui: &mut Ui) {
     // egui keeps the cursor in view inside a scroll area, so dictation
     // landing at the end scrolls down with it.
     let output = egui::ScrollArea::vertical()
-        .id_salt("editor-scroll")
+        .id_salt(f.editor.id("editor-scroll"))
         .auto_shrink(false)
         .show(ui, |ui| {
             TextEdit::multiline(&mut text)

@@ -8,6 +8,7 @@ pub mod fake_speech;
 pub mod model;
 pub mod openai;
 pub mod persistence;
+pub mod sink;
 pub mod speech;
 pub mod tools;
 pub mod typist;

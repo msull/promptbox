@@ -16,10 +16,11 @@ use crate::adapters::persistence::FileStore;
 use crate::adapters::typist::SystemTypist;
 use crate::core::action::RECENT_LIMIT;
 use crate::core::action::TypingPolicy;
-use crate::core::{AppAction, AppCore, Clock, Effect, Project};
+use crate::core::{AppAction, AppCore, Clock, Delivery, Effect, Project};
 use crate::ports::ai::Rewriter;
 use crate::ports::clipboard::Clipboard;
 use crate::ports::history::{HistoryStore, Settings, ThemeChoice};
+use crate::ports::sink::PromptSink;
 use crate::ports::tools::ToolRunner;
 use crate::ports::typist::Typist;
 pub use crate::voice::{Recognizer, Voice};
@@ -107,6 +108,14 @@ pub struct Editor {
     /// Salt for every egui id the editor's widgets use, so a host can
     /// draw several editors without their text state colliding.
     id: egui::Id,
+    /// Takes the prompt on Send when the editor is embedded in a host.
+    sink: Option<Box<dyn PromptSink>>,
+    /// A key the host resolved itself (its own settings or keychain);
+    /// wins over the settings file and the environment.
+    host_api_key: Option<String>,
+    /// Drawn inside another app: no window chrome, no settings window,
+    /// and shortcuts only while the editor has focus.
+    embedded: bool,
 }
 
 impl Editor {
@@ -145,6 +154,9 @@ impl Editor {
             window_focused: true,
             stop_requested: false,
             id: egui::Id::new("promptbox"),
+            sink: None,
+            host_api_key: None,
+            embedded: false,
         };
         editor.settings_draft = editor.settings.clone();
         editor.rebuild_rewriter();
@@ -168,6 +180,30 @@ impl Editor {
     /// must make each unique.
     pub fn set_id(&mut self, id: egui::Id) {
         self.id = id;
+    }
+
+    /// Sends go to `sink` from now on, and the clipboard is left alone.
+    pub fn set_sink(&mut self, sink: Box<dyn PromptSink>) {
+        self.sink = Some(sink);
+        self.core.set_delivery(Delivery::Host);
+    }
+
+    /// A key resolved by the host; `None` falls back to the settings file
+    /// and the environment.
+    pub fn set_api_key(&mut self, key: Option<String>) {
+        self.host_api_key = key.filter(|k| !k.trim().is_empty());
+        self.rebuild_rewriter();
+    }
+
+    /// Embedded editors draw no window chrome or settings window and take
+    /// their shortcuts only while focused, so the host keeps its own keys.
+    pub fn set_embedded(&mut self, embedded: bool) {
+        self.embedded = embedded;
+    }
+
+    #[must_use]
+    pub fn is_embedded(&self) -> bool {
+        self.embedded
     }
 
     /// Where tool manifests are read from; `reload_tools` reads them.
@@ -287,7 +323,9 @@ impl Editor {
     /// Where the `OpenAI` key comes from, for the settings window.
     #[must_use]
     pub fn api_key_source(&self) -> &'static str {
-        if !self.settings.openai_api_key.trim().is_empty() {
+        if self.host_api_key.is_some() {
+            "host"
+        } else if !self.settings.openai_api_key.trim().is_empty() {
             "settings"
         } else if std::env::var_os("OPENAI_API_KEY").is_some() {
             "OPENAI_API_KEY environment variable"
@@ -305,6 +343,9 @@ impl Editor {
     }
 
     fn resolve_api_key(&self) -> Option<String> {
+        if let Some(key) = &self.host_api_key {
+            return Some(key.clone());
+        }
         let from_settings = self.settings.openai_api_key.trim();
         if !from_settings.is_empty() {
             return Some(from_settings.to_owned());
@@ -451,6 +492,10 @@ impl Editor {
             Effect::WriteClipboard(text) => {
                 AppAction::ClipboardWriteFinished(self.clipboard.write_text(&text))
             }
+            Effect::Deliver(text) => AppAction::DeliverFinished(match &mut self.sink {
+                Some(sink) => sink.deliver(&text),
+                None => Err("no host to send to".into()),
+            }),
             Effect::SaveHistory(prompt) => AppAction::HistorySaveFinished {
                 id: prompt.id,
                 result: self.history.save_sent(&prompt),

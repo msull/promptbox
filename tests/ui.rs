@@ -12,6 +12,7 @@ use promptbox::PromptBoxApp;
 use promptbox::adapters::clipboard::FakeClipboard;
 use promptbox::adapters::openai::FakeRewriter;
 use promptbox::adapters::persistence::MemoryStore;
+use promptbox::adapters::sink::FakeSink;
 use promptbox::adapters::typist::FakeTypist;
 use promptbox::core::SessionStatus;
 use std::sync::Arc;
@@ -675,4 +676,122 @@ fn every_symbol_in_the_ui_has_a_glyph_with_the_fallback_font() {
     if std::path::Path::new("/System/Library/Fonts/Apple Symbols.ttf").exists() {
         assert_eq!(missing, "", "glyphs with no font: {missing}");
     }
+}
+
+// ---- embedding in a host ---------------------------------------------
+
+#[test]
+fn a_host_sink_takes_send_and_the_clipboard_is_left_alone() {
+    // A clipboard that would fail proves Send never touched it.
+    let clipboard = FakeClipboard {
+        fail_with: Some("no clipboard here".into()),
+        ..FakeClipboard::default()
+    };
+    let mut harness = harness_with(clipboard, MemoryStore::default());
+    let sink = FakeSink::default();
+    harness.state_mut().editor.set_sink(Box::new(sink.clone()));
+    type_prompt(&mut harness, "fix the failing test");
+    harness.get_by_label("Send →").click();
+    harness.run_steps(2);
+    harness.get_by_label("Prompt sent");
+    assert_eq!(
+        *sink.delivered.lock().unwrap(),
+        vec!["fix the failing test".to_owned()]
+    );
+    assert_eq!(harness.state().core().doc().committed(), "");
+    // Copy still goes to the clipboard, so here it fails and says so.
+    type_prompt(&mut harness, "keep me");
+    harness.get_by_label("Copy").click();
+    harness.run_steps(2);
+    harness.get_by_label_contains("no clipboard here");
+    assert_eq!(harness.state().core().doc().committed(), "keep me");
+}
+
+#[test]
+fn a_failing_host_keeps_the_prompt() {
+    let mut harness = harness();
+    let sink = FakeSink {
+        fail_with: Some("session is not running".into()),
+        ..FakeSink::default()
+    };
+    harness.state_mut().editor.set_sink(Box::new(sink));
+    type_prompt(&mut harness, "hello");
+    harness.get_by_label("Send →").click();
+    harness.run_steps(2);
+    harness.get_by_label_contains("session is not running");
+    assert_eq!(harness.state().core().doc().committed(), "hello");
+}
+
+#[test]
+fn a_host_supplied_key_enables_ai_and_wins_over_settings() {
+    // The environment may hold a key of its own, so only the source is
+    // asserted around the host's.
+    let mut harness = harness();
+    harness
+        .state_mut()
+        .editor
+        .set_api_key(Some("sk-from-host".into()));
+    assert!(harness.state().ai_available());
+    assert_eq!(harness.state().api_key_source(), "host");
+    harness.state_mut().editor.set_api_key(Some("   ".into()));
+    assert_ne!(harness.state().api_key_source(), "host", "blank is no key");
+}
+
+#[test]
+fn embedded_editors_hide_the_window_chrome_and_take_shortcuts_only_when_focused() {
+    use egui::{Key, Modifiers};
+    let mut harness = harness();
+    harness.get_by_label("⚙");
+    harness.get_by_label("Debug");
+    harness.get_by_label("Project");
+    harness.state_mut().editor.set_embedded(true);
+    harness.run_steps(2);
+    assert!(harness.query_by_label("⚙").is_none());
+    assert!(harness.query_by_label("Debug").is_none());
+    assert!(harness.query_by_label("Project").is_none());
+    harness.get_by_label("CC");
+    harness.get_by_label("Start listening");
+    harness.get_by_label("Send →");
+
+    // ⌘⇧K clears only while the prompt has focus: the host keeps its keys.
+    type_prompt(&mut harness, "Keep this.");
+    harness.state_mut().editor.set_text("Keep this.");
+    harness.run_steps(2);
+    harness.key_press_modifiers(Modifiers::COMMAND | Modifiers::SHIFT, Key::K);
+    harness.run_steps(2);
+    assert_eq!(harness.state().core().doc().committed(), "");
+    harness.state_mut().editor.set_text("Still here.");
+    harness.run_steps(2);
+    // Focus leaves the editor (the host's widgets have it).
+    let focused = harness_focus(&harness);
+    harness.ctx.memory_mut(|m| m.surrender_focus(focused));
+    harness.run_steps(2);
+    harness.key_press_modifiers(Modifiers::COMMAND | Modifiers::SHIFT, Key::K);
+    harness.run_steps(2);
+    assert_eq!(harness.state().core().doc().committed(), "Still here.");
+}
+
+/// The id of whatever widget has focus, so a test can take it away.
+fn harness_focus(harness: &Harness<'static, PromptBoxApp>) -> egui::Id {
+    harness
+        .ctx
+        .memory(egui::Memory::focused)
+        .expect("something has focus")
+}
+
+#[test]
+fn set_text_replaces_the_prompt_in_one_undo_step() {
+    let mut harness = harness();
+    type_prompt(&mut harness, "typed by hand");
+    harness.state_mut().editor.set_text("primed by the host");
+    harness.run_steps(2);
+    assert_eq!(
+        harness.state().core().doc().committed(),
+        "primed by the host"
+    );
+    harness
+        .state_mut()
+        .dispatch(promptbox::core::AppAction::Undo);
+    harness.run_steps(2);
+    assert_eq!(harness.state().core().doc().committed(), "typed by hand");
 }
