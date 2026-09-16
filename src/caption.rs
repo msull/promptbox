@@ -12,9 +12,10 @@ use std::collections::VecDeque;
 use egui::text::{LayoutJob, TextFormat};
 use egui::{Align2, Color32, CornerRadius, FontId, Pos2, Vec2, ViewportBuilder, ViewportId};
 
-use crate::app::PromptBoxApp;
+use crate::core::AppCore;
 use crate::core::action::HeardCommand;
 use crate::core::document::CaptionParts;
+use crate::voice::Voice;
 
 /// Seconds the caption stays fully visible after its text last changed.
 const HOLD_SECS: f64 = 2.5;
@@ -178,20 +179,18 @@ impl CaptionState {
 
 /// Updates the caption from the document and draws the overlay viewport
 /// while there is something to show. Call once per frame from the root.
-pub fn draw(app: &mut PromptBoxApp, ctx: &egui::Context) {
+pub fn draw(voice: &mut Voice, core: &AppCore, ctx: &egui::Context) {
     let now = ctx.input(|i| i.time);
-    if app.captions_enabled() && (app.is_live() || app.is_demo_running()) {
-        let doc = app.core().doc();
+    if voice.captions_enabled() && (voice.is_live() || voice.is_demo_running()) {
+        let doc = core.doc();
         let parts = doc.caption_parts();
         let present = doc.committed()[..parts.end].to_owned();
-        app.caption.update(&parts, &present, now);
-        // Clone the small record: `core()` borrows the whole app.
-        let heard = app.core().heard_command().cloned();
-        app.caption.flash_command(heard.as_ref(), now);
+        voice.caption.update(&parts, &present, now);
+        voice.caption.flash_command(core.heard_command(), now);
     } else {
-        app.caption.clear();
+        voice.caption.clear();
     }
-    let alpha = app.caption.alpha(now);
+    let alpha = voice.caption.alpha(now);
     if alpha <= 0.0 {
         return;
     }
@@ -205,7 +204,7 @@ pub fn draw(app: &mut PromptBoxApp, ctx: &egui::Context) {
         (monitor.x - BAR_SIZE.x) / 2.0,
         monitor.y - BAR_SIZE.y - BOTTOM_INSET,
     );
-    let pieces = app.caption.pieces();
+    let pieces = voice.caption.pieces();
 
     ctx.show_viewport_immediate(
         ViewportId::from_hash_of("caption-overlay"),

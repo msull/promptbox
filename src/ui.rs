@@ -7,7 +7,7 @@ use egui::text::{CCursor, CCursorRange, LayoutJob, TextFormat};
 use egui::{Key, KeyboardShortcut, Modifiers, RichText, TextEdit, TextStyle, Ui};
 use unicode_segmentation::UnicodeSegmentation;
 
-use crate::app::{PromptBoxApp, Recognizer};
+use crate::app::{Editor, Recognizer, Voice, WindowState};
 use crate::core::{AppAction, SessionStatus};
 use crate::ports::history::ThemeChoice;
 
@@ -25,27 +25,48 @@ const NEW_PARAGRAPH: KeyboardShortcut = KeyboardShortcut::new(Modifiers::SHIFT, 
 const CLEAR: KeyboardShortcut =
     KeyboardShortcut::new(Modifiers::COMMAND.plus(Modifiers::SHIFT), Key::K);
 
-pub fn draw(app: &mut PromptBoxApp, ui: &mut Ui) {
-    handle_shortcuts(app, ui);
-    egui::Panel::top("top").show(ui, |ui| top_bar(app, ui));
+/// What one draw of the editor works on: the editor, the voice runtime
+/// (bound to this editor or not), and, for the standalone window, its
+/// chrome. `listen` comes back set when the user asked to start (`true`)
+/// or stop (`false`) listening; binding is the host's decision.
+pub struct Frame<'a> {
+    pub editor: &'a mut Editor,
+    pub voice: &'a mut Voice,
+    pub window: Option<&'a mut WindowState>,
+    /// The runtime's dictation goes into this editor.
+    pub bound: bool,
+    pub listen: Option<bool>,
+}
+
+impl Frame<'_> {
+    /// Listening into this editor right now.
+    fn listening_here(&self) -> bool {
+        self.bound && self.voice.is_live()
+    }
+}
+
+pub fn draw(f: &mut Frame<'_>, ui: &mut Ui) {
+    handle_shortcuts(f, ui);
+    egui::Panel::top("top").show(ui, |ui| top_bar(f, ui));
     // Outermost first: the notification strip sits below the buttons and
     // keeps its height whether or not a toast is showing, so nothing above
     // it reflows when one appears.
     egui::Panel::bottom("notifications")
         .exact_size(NOTIFICATION_STRIP_HEIGHT)
         .resizable(false)
-        .show(ui, |ui| notification_strip(app, ui));
-    egui::Panel::bottom("bottom").show(ui, |ui| bottom_bar(app, ui));
-    egui::Panel::bottom("ai-row").show(ui, |ui| ai_row(app, ui));
-    egui::CentralPanel::default().show(ui, |ui| editor(app, ui));
-    commands_popup(app, ui);
-    settings_window(app, ui);
-    projects_window(app, ui);
+        .show(ui, |ui| notification_strip(f, ui));
+    egui::Panel::bottom("bottom").show(ui, |ui| bottom_bar(f, ui));
+    egui::Panel::bottom("ai-row").show(ui, |ui| ai_row(f, ui));
+    egui::CentralPanel::default().show(ui, |ui| editor(f, ui));
+    commands_popup(f, ui);
+    settings_window(f, ui);
+    projects_window(f, ui);
 }
 
 /// Editor for the project list. Everything is plain text, one entry per
 /// line, and nothing is applied until Save.
-fn projects_window(app: &mut PromptBoxApp, ui: &mut Ui) {
+fn projects_window(f: &mut Frame<'_>, ui: &mut Ui) {
+    let app = &mut *f.editor;
     if app.project_editor.is_none() {
         return;
     }
@@ -199,14 +220,14 @@ pub fn install_symbol_font(ctx: &egui::Context) {
 
 /// Instruction box under the prompt: whatever is typed here is sent to the
 /// model together with the whole prompt, and the reply replaces the prompt.
-fn ai_row(app: &mut PromptBoxApp, ui: &mut Ui) {
-    if let Some(cap) = app.core().instruction_capture().cloned() {
+fn ai_row(f: &mut Frame<'_>, ui: &mut Ui) {
+    if let Some(cap) = f.editor.core().instruction_capture().cloned() {
         capture_row(&cap, ui);
         return;
     }
     ui.horizontal(|ui| {
-        let busy = app.core().ai_busy();
-        let available = app.ai_available();
+        let busy = f.editor.core().ai_busy();
+        let available = f.editor.ai_available();
         let hint = if available {
             "Ask the AI to change the prompt, or /tool … (Enter to send)"
         } else {
@@ -217,7 +238,7 @@ fn ai_row(app: &mut PromptBoxApp, ui: &mut Ui) {
         let response = ui
             .add_enabled(
                 !busy && available,
-                TextEdit::singleline(&mut app.ai_instruction)
+                TextEdit::singleline(&mut f.editor.ai_instruction)
                     .id(egui::Id::new("ai-instruction"))
                     .hint_text(hint)
                     .desired_width(width),
@@ -227,14 +248,14 @@ fn ai_row(app: &mut PromptBoxApp, ui: &mut Ui) {
         let clicked = ui
             .add_enabled(!busy && available, egui::Button::new("Ask"))
             .clicked();
-        if (submitted || clicked) && !app.ai_instruction.trim().is_empty() {
-            let instruction = std::mem::take(&mut app.ai_instruction);
+        if (submitted || clicked) && !f.editor.ai_instruction.trim().is_empty() {
+            let instruction = std::mem::take(&mut f.editor.ai_instruction);
             // "/tool …" routes to a registered tool instead of a rewrite.
             let action = match tool_request(&instruction) {
                 Some(request) => AppAction::ToolRequest { request },
                 None => AppAction::AiRewrite { instruction },
             };
-            app.dispatch(action);
+            f.editor.dispatch(action);
         }
     });
 }
@@ -292,8 +313,14 @@ fn capture_row(cap: &crate::core::InstructionCapture, ui: &mut Ui) {
 }
 
 /// Registered tools, where they come from, and a Reload button.
-fn tools_settings(app: &mut PromptBoxApp, ui: &mut Ui) {
-    let names: Vec<String> = app.core().tools().iter().map(|t| t.name.clone()).collect();
+fn tools_settings(f: &mut Frame<'_>, ui: &mut Ui) {
+    let names: Vec<String> = f
+        .editor
+        .core()
+        .tools()
+        .iter()
+        .map(|t| t.name.clone())
+        .collect();
     let summary = if names.is_empty() {
         "Tools: none registered".to_owned()
     } else {
@@ -301,26 +328,26 @@ fn tools_settings(app: &mut PromptBoxApp, ui: &mut Ui) {
     };
     ui.horizontal(|ui| {
         ui.label(RichText::new(summary).small().weak());
-        if app.tools_dir().is_some() && ui.small_button("Reload").clicked() {
-            app.reload_tools();
+        if f.editor.tools_dir().is_some() && ui.small_button("Reload").clicked() {
+            f.editor.reload_tools();
         }
     });
-    if let Some(dir) = app.tools_dir() {
+    if let Some(dir) = f.editor.tools_dir() {
         ui.label(
             RichText::new(format!("Folders with a tool.json in {}", dir.display()))
                 .small()
                 .weak(),
         );
     }
-    for p in &app.tool_problems {
+    for p in &f.editor.tool_problems {
         ui.label(RichText::new(p).small().color(ui.visuals().error_fg_color));
     }
 }
 
 /// The paste-into-app options for Send, with the Accessibility status.
-fn send_settings(app: &mut PromptBoxApp, ui: &mut Ui) {
+fn send_settings(f: &mut Frame<'_>, ui: &mut Ui) {
     ui.vertical(|ui| {
-        let mut on = app.settings().type_on_send;
+        let mut on = f.editor.settings().type_on_send;
         if ui
             .checkbox(&mut on, "Paste into the focused app (⌘V)")
             .on_hover_text(
@@ -329,9 +356,9 @@ fn send_settings(app: &mut PromptBoxApp, ui: &mut Ui) {
             )
             .changed()
         {
-            app.set_type_on_send(on);
+            f.editor.set_type_on_send(on);
         }
-        let mut submit = app.settings().submit_after_paste;
+        let mut submit = f.editor.settings().submit_after_paste;
         if ui
             .add_enabled(
                 on,
@@ -339,10 +366,10 @@ fn send_settings(app: &mut PromptBoxApp, ui: &mut Ui) {
             )
             .changed()
         {
-            app.set_submit_after_paste(submit);
+            f.editor.set_submit_after_paste(submit);
         }
         ui.horizontal(|ui| {
-            if app.typing_permission_granted() {
+            if f.editor.typing_permission_granted() {
                 ui.label(RichText::new("Accessibility: granted").weak().small());
             } else {
                 ui.label(
@@ -351,15 +378,15 @@ fn send_settings(app: &mut PromptBoxApp, ui: &mut Ui) {
                         .small(),
                 );
                 if ui.small_button("Request…").clicked() {
-                    app.request_typing_permission();
+                    f.editor.request_typing_permission();
                 }
             }
         });
     });
 }
 
-fn settings_window(app: &mut PromptBoxApp, ui: &mut Ui) {
-    if !app.show_settings {
+fn settings_window(f: &mut Frame<'_>, ui: &mut Ui) {
+    if !f.editor.show_settings {
         return;
     }
     let mut open = true;
@@ -377,7 +404,7 @@ fn settings_window(app: &mut PromptBoxApp, ui: &mut Ui) {
                 .show(ui, |ui| {
                     ui.label("OpenAI API key");
                     ui.add(
-                        TextEdit::singleline(&mut app.settings_draft.openai_api_key)
+                        TextEdit::singleline(&mut f.editor.settings_draft.openai_api_key)
                             .password(true)
                             .hint_text("sk-…")
                             .desired_width(240.0),
@@ -385,24 +412,24 @@ fn settings_window(app: &mut PromptBoxApp, ui: &mut Ui) {
                     ui.end_row();
                     ui.label("Model");
                     ui.add(
-                        TextEdit::singleline(&mut app.settings_draft.openai_model)
+                        TextEdit::singleline(&mut f.editor.settings_draft.openai_model)
                             .hint_text(crate::adapters::openai::DEFAULT_MODEL)
                             .desired_width(240.0),
                     );
                     ui.end_row();
                     ui.label("Trigger word");
                     ui.add(
-                        TextEdit::singleline(&mut app.settings_draft.trigger)
+                        TextEdit::singleline(&mut f.editor.settings_draft.trigger)
                             .hint_text(crate::core::commands::DEFAULT_TRIGGER)
                             .desired_width(240.0),
                     );
                     ui.end_row();
                     ui.label("Send");
-                    send_settings(app, ui);
+                    send_settings(f, ui);
                     ui.end_row();
                     ui.label("Appearance");
                     ui.horizontal(|ui| {
-                        let mut choice = app.theme();
+                        let mut choice = f.editor.theme();
                         for (value, label) in [
                             (ThemeChoice::Auto, "Auto"),
                             (ThemeChoice::Light, "Light"),
@@ -410,19 +437,19 @@ fn settings_window(app: &mut PromptBoxApp, ui: &mut Ui) {
                         ] {
                             ui.selectable_value(&mut choice, value, label);
                         }
-                        if choice != app.theme() {
-                            app.set_theme(ui.ctx(), choice);
+                        if choice != f.editor.theme() {
+                            f.editor.set_theme(ui.ctx(), choice);
                         }
                     });
                     ui.end_row();
                 });
             ui.add_space(6.0);
             ui.label(
-                RichText::new(format!("Key in use: {}", app.api_key_source()))
+                RichText::new(format!("Key in use: {}", f.editor.api_key_source()))
                     .weak()
                     .small(),
             );
-            let (p, c) = app.core().ai_tokens();
+            let (p, c) = f.editor.core().ai_tokens();
             ui.label(
                 RichText::new(format!(
                     "AI tokens this session: {p} prompt, {c} completion"
@@ -440,23 +467,23 @@ fn settings_window(app: &mut PromptBoxApp, ui: &mut Ui) {
                 }
             });
             ui.add_space(6.0);
-            tools_settings(app, ui);
+            tools_settings(f, ui);
         });
     if save {
-        app.save_settings_draft();
+        f.editor.save_settings_draft();
     }
     if open_projects {
-        app.open_project_editor();
+        f.editor.open_project_editor();
     }
-    app.show_settings = open;
+    f.editor.show_settings = open;
 }
 
 /// Floating list of voice commands, built from the parser's grammar.
-fn commands_popup(app: &mut PromptBoxApp, ui: &mut Ui) {
-    if !app.show_commands {
+fn commands_popup(f: &mut Frame<'_>, ui: &mut Ui) {
+    if !f.editor.show_commands {
         return;
     }
-    let mut trigger = app.core().trigger().to_owned();
+    let mut trigger = f.editor.core().trigger().to_owned();
     if let Some(first) = trigger.get_mut(0..1) {
         first.make_ascii_uppercase();
     }
@@ -499,12 +526,12 @@ fn commands_popup(app: &mut PromptBoxApp, ui: &mut Ui) {
                 .small(),
             );
         });
-    app.show_commands = open;
+    f.editor.show_commands = open;
 }
 
 /// Shortcuts are consumed before the text box sees them, so the document's
 /// single history owns undo/redo rather than egui's internal one.
-fn handle_shortcuts(app: &mut PromptBoxApp, ui: &mut Ui) {
+fn handle_shortcuts(f: &mut Frame<'_>, ui: &mut Ui) {
     // Order matters: more modifiers first so ⌘⇧Z is not eaten by ⌘Z.
     type Binding = (&'static KeyboardShortcut, fn() -> AppAction);
     const BINDINGS: &[Binding] = &[
@@ -527,34 +554,30 @@ fn handle_shortcuts(app: &mut PromptBoxApp, ui: &mut Ui) {
         i.consume_shortcut(&TOGGLE_LISTEN)
     });
     for action in actions {
-        app.dispatch(action);
+        f.editor.dispatch(action);
     }
     if toggle {
-        if app.is_live() {
-            app.stop_listening();
-        } else {
-            app.start_listening();
-        }
+        f.listen = Some(!f.listening_here());
     }
 }
 
 /// Height of the always-present toast strip at the bottom of the window.
 const NOTIFICATION_STRIP_HEIGHT: f32 = 22.0;
 
-fn notification_strip(app: &mut PromptBoxApp, ui: &mut Ui) {
+fn notification_strip(f: &mut Frame<'_>, ui: &mut Ui) {
     ui.horizontal_centered(|ui| {
-        if let Some(pending) = app.core().pending_tool() {
+        if let Some(pending) = f.editor.core().pending_tool() {
             let text = format!("Run {}?", crate::core::describe_call(&pending.call));
             ui.label(RichText::new(&text).small()).on_hover_text(&text);
             if ui.small_button("Run").clicked() {
-                app.dispatch(AppAction::RunPendingTool);
+                f.editor.dispatch(AppAction::RunPendingTool);
             }
             if ui.small_button("Cancel").clicked() {
-                app.dispatch(AppAction::CancelPendingTool);
+                f.editor.dispatch(AppAction::CancelPendingTool);
             }
             return;
         }
-        if let Some(toast) = app.core().toast() {
+        if let Some(toast) = f.editor.core().toast() {
             let mut text = RichText::new(&toast.text).small();
             if toast.is_error {
                 text = text.color(ui.visuals().error_fg_color);
@@ -568,31 +591,32 @@ fn notification_strip(app: &mut PromptBoxApp, ui: &mut Ui) {
 /// so the window can shrink to a corner-sized note.
 const COMPACT_WIDTH: f32 = 460.0;
 
-fn top_bar(app: &mut PromptBoxApp, ui: &mut Ui) {
+fn top_bar(f: &mut Frame<'_>, ui: &mut Ui) {
     let compact = ui.available_width() < COMPACT_WIDTH;
     // Right-side controls are laid out first so they always fit; the
     // status and project picker get whatever width is left and truncate.
     ui.horizontal(|ui| {
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            window_controls(app, ui, compact);
+            window_controls(f, ui, compact);
             ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
-                status_indicator(app, ui);
+                status_indicator(f, ui);
                 if !compact {
-                    project_picker(app, ui);
+                    project_picker(f, ui);
                 }
             });
         });
     });
-    if !app.model_present() {
-        model_download_row(app, ui);
+    if !f.voice.model_present() {
+        model_download_row(f, ui);
     }
 }
 
-fn project_picker(app: &mut PromptBoxApp, ui: &mut Ui) {
+fn project_picker(f: &mut Frame<'_>, ui: &mut Ui) {
     ui.separator();
     ui.label("Project");
-    let selected = app.core().selected_project();
-    let names: Vec<String> = app
+    let selected = f.editor.core().selected_project();
+    let names: Vec<String> = f
+        .editor
         .core()
         .projects()
         .iter()
@@ -607,84 +631,91 @@ fn project_picker(app: &mut PromptBoxApp, ui: &mut Ui) {
             }
         });
     if choice != selected {
-        app.dispatch(AppAction::SelectProject(choice));
+        f.editor.dispatch(AppAction::SelectProject(choice));
     }
     if ui
-        .selectable_label(app.project_editor.is_some(), "Edit")
+        .selectable_label(f.editor.project_editor.is_some(), "Edit")
         .on_hover_text("Edit projects: vocabulary, corrections, glossary, AI context")
         .clicked()
     {
-        if app.project_editor.is_some() {
-            app.project_editor = None;
+        if f.editor.project_editor.is_some() {
+            f.editor.project_editor = None;
         } else {
-            app.open_project_editor();
+            f.editor.open_project_editor();
         }
     }
 }
 
 /// Settings, Pin, CC, Dock, Debug, and Listen/Stop, right-aligned.
-fn window_controls(app: &mut PromptBoxApp, ui: &mut Ui, compact: bool) {
+fn window_controls(f: &mut Frame<'_>, ui: &mut Ui, compact: bool) {
     if ui
-        .selectable_label(app.show_settings, "⚙")
+        .selectable_label(f.editor.show_settings, "⚙")
         .on_hover_text("Settings: OpenAI key, model, trigger word")
         .clicked()
     {
-        app.show_settings = !app.show_settings;
+        f.editor.show_settings = !f.editor.show_settings;
     }
-    let mut pinned = app.always_on_top();
-    if ui
-        .toggle_value(&mut pinned, "Pin")
-        .on_hover_text("Pin: keep this window above others")
-        .changed()
-    {
-        app.set_always_on_top(ui.ctx(), pinned);
+    if let Some(window) = f.window.as_deref_mut() {
+        let mut pinned = f.editor.settings().always_on_top;
+        if ui
+            .toggle_value(&mut pinned, "Pin")
+            .on_hover_text("Pin: keep this window above others")
+            .changed()
+        {
+            window.set_always_on_top(ui.ctx(), f.editor, pinned);
+        }
     }
-    let mut captions = app.captions_enabled();
+    let mut captions = f.voice.captions_enabled();
     if ui
         .toggle_value(&mut captions, "CC")
         .on_hover_text("Captions: show what you are saying at the bottom of the screen")
         .changed()
     {
-        app.set_captions_enabled(captions);
+        f.voice.set_captions_enabled(captions);
+        f.editor.update_settings(|s| s.captions = captions);
     }
-    if ui
-        .button("Dock")
-        .on_hover_text("Dock: shrink and move to the next screen corner")
-        .clicked()
+    if let Some(window) = f.window.as_deref_mut()
+        && ui
+            .button("Dock")
+            .on_hover_text("Dock: shrink and move to the next screen corner")
+            .clicked()
     {
-        app.dock_next_corner(ui.ctx());
+        window.dock_next_corner(ui.ctx());
     }
     if compact {
-        listen_controls(app, ui, true);
+        listen_controls(f, ui, true);
         return;
     }
     ui.menu_button("Debug", |ui| {
-        if app.is_demo_running() {
+        if f.voice.is_demo_running() {
             if ui.button("Stop demo").clicked() {
-                app.stop_demo();
+                let actions = f.voice.stop_demo();
+                f.editor.apply(actions);
             }
         } else {
             if ui.button("Demo dictation").clicked() {
-                app.start_demo(false);
+                let actions = f.voice.start_demo(false);
+                f.editor.apply(actions);
             }
             if ui.button("Demo with gap").clicked() {
-                app.start_demo(true);
+                let actions = f.voice.start_demo(true);
+                f.editor.apply(actions);
             }
         }
     });
-    listen_controls(app, ui, false);
+    listen_controls(f, ui, false);
 }
 
-fn listen_controls(app: &mut PromptBoxApp, ui: &mut Ui, compact: bool) {
-    let loading = matches!(app.recognizer(), Recognizer::Loading(_));
-    let finishing = *app.core().status() == SessionStatus::Finishing;
-    if app.is_live() {
+fn listen_controls(f: &mut Frame<'_>, ui: &mut Ui, compact: bool) {
+    let loading = matches!(f.voice.recognizer(), Recognizer::Loading(_));
+    let finishing = *f.editor.core().status() == SessionStatus::Finishing;
+    if f.listening_here() {
         if ui
             .add_enabled(!finishing, egui::Button::new("Stop"))
             .on_hover_text("Stop listening (⌘L)")
             .clicked()
         {
-            app.stop_listening();
+            f.listen = Some(false);
         }
     } else {
         let label = match (loading, compact) {
@@ -694,18 +725,21 @@ fn listen_controls(app: &mut PromptBoxApp, ui: &mut Ui, compact: bool) {
             (false, false) => "Start listening",
         };
         if ui
-            .add_enabled(!loading && !app.is_demo_running(), egui::Button::new(label))
+            .add_enabled(
+                !loading && !f.voice.is_demo_running(),
+                egui::Button::new(label),
+            )
             .on_hover_text("Start listening (⌘L)")
             .clicked()
         {
-            app.start_listening();
+            f.listen = Some(true);
         }
     }
 }
 
-fn model_download_row(app: &mut PromptBoxApp, ui: &mut Ui) {
+fn model_download_row(f: &mut Frame<'_>, ui: &mut Ui) {
     ui.horizontal(|ui| {
-        if let Some(d) = app.download() {
+        if let Some(d) = f.voice.download() {
             let (done, total) = d.progress();
             let mb = |b: u64| b as f32 / 1_048_576.0;
             let frac = if total > 0 {
@@ -725,10 +759,10 @@ fn model_download_row(app: &mut PromptBoxApp, ui: &mut Ui) {
         } else {
             ui.label(RichText::new("No speech model yet.").weak());
             if ui.button("Download base.en (148 MB)").clicked() {
-                app.start_download();
+                f.voice.start_download();
             }
             ui.label(
-                RichText::new(format!("→ {}", app.model_path().display()))
+                RichText::new(format!("→ {}", f.voice.model_path().display()))
                     .weak()
                     .small(),
             );
@@ -753,8 +787,8 @@ fn level_meter(ui: &mut Ui, level_db: f32, active: bool) {
     ui.label(RichText::new(s).color(color).monospace());
 }
 
-fn status_indicator(app: &mut PromptBoxApp, ui: &mut Ui) {
-    let (icon, text, color, ack) = match app.core().status() {
+fn status_indicator(f: &mut Frame<'_>, ui: &mut Ui) {
+    let (icon, text, color, ack) = match f.editor.core().status() {
         SessionStatus::Idle => (
             "○",
             "Idle".to_owned(),
@@ -796,45 +830,45 @@ fn status_indicator(app: &mut PromptBoxApp, ui: &mut Ui) {
             .on_hover_text(&text);
     });
     if ack && ui.small_button("Dismiss").clicked() {
-        app.dispatch(AppAction::AcknowledgeStatus);
+        f.editor.dispatch(AppAction::AcknowledgeStatus);
     }
-    level_meter(ui, app.core().audio_level_db(), app.is_live());
+    level_meter(ui, f.editor.core().audio_level_db(), f.listening_here());
 }
 
-fn bottom_bar(app: &mut PromptBoxApp, ui: &mut Ui) {
+fn bottom_bar(f: &mut Frame<'_>, ui: &mut Ui) {
     // Wrapped so a narrow docked window keeps every button reachable.
     ui.horizontal_wrapped(|ui| {
         if ui.button("Undo").on_hover_text("⌘Z").clicked() {
-            app.dispatch(AppAction::Undo);
+            f.editor.dispatch(AppAction::Undo);
         }
         if ui
-            .add_enabled(app.core().doc().can_redo(), egui::Button::new("Redo"))
+            .add_enabled(f.editor.core().doc().can_redo(), egui::Button::new("Redo"))
             .on_hover_text("⌘⇧Z")
             .clicked()
         {
-            app.dispatch(AppAction::Redo);
+            f.editor.dispatch(AppAction::Redo);
         }
         if ui
             .button("Delete sentence")
             .on_hover_text("Remove the last sentence (⌘⌫). ⌘⇧⌫ removes the paragraph.")
             .clicked()
         {
-            app.dispatch(AppAction::DeleteSentence);
+            f.editor.dispatch(AppAction::DeleteSentence);
         }
         if ui.button("Clear").on_hover_text("⌘⇧K").clicked() {
-            app.dispatch(AppAction::ClearPrompt);
+            f.editor.dispatch(AppAction::ClearPrompt);
         }
-        let busy = app.core().is_busy();
-        let ai_busy = app.core().ai_busy();
+        let busy = f.editor.core().is_busy();
+        let ai_busy = f.editor.core().ai_busy();
         if ui
             .add_enabled(
-                !ai_busy && app.ai_available(),
+                !ai_busy && f.editor.ai_available(),
                 egui::Button::new("Clean up"),
             )
             .on_hover_text("AI: fix recognition errors and punctuation, remove filler (undoable)")
             .clicked()
         {
-            app.dispatch(AppAction::AiCleanUp);
+            f.editor.dispatch(AppAction::AiCleanUp);
         }
         if ai_busy {
             ui.spinner();
@@ -845,30 +879,30 @@ fn bottom_bar(app: &mut PromptBoxApp, ui: &mut Ui) {
             .on_hover_text("Copy without clearing (⌘⇧C)")
             .clicked()
         {
-            app.dispatch(AppAction::CopyPrompt);
+            f.editor.dispatch(AppAction::CopyPrompt);
         }
         if ui
             .add_enabled(!busy, egui::Button::new("Send →"))
             .on_hover_text("Copy to clipboard and clear (⌘Return)")
             .clicked()
         {
-            app.dispatch(AppAction::SendPrompt);
+            f.editor.dispatch(AppAction::SendPrompt);
         }
         if ui
-            .selectable_label(app.show_commands, "Commands")
+            .selectable_label(f.editor.show_commands, "Commands")
             .on_hover_text("Show the voice commands")
             .clicked()
         {
-            app.show_commands = !app.show_commands;
+            f.editor.show_commands = !f.editor.show_commands;
         }
     });
 }
 
-fn editor(app: &mut PromptBoxApp, ui: &mut Ui) {
+fn editor(f: &mut Frame<'_>, ui: &mut Ui) {
     let label = ui.label(RichText::new("Prompt").small().weak());
-    let rendered = app.core().doc().rendered();
-    let provisional = app.core().doc().provisional_range();
-    let pending_command = app.core().pending_command_range();
+    let rendered = f.editor.core().doc().rendered();
+    let provisional = f.editor.core().doc().provisional_range();
+    let pending_command = f.editor.core().pending_command_range();
     let mut text = rendered.clone();
 
     // The document owns the cursor. When it moved for a non-typing reason
@@ -877,7 +911,7 @@ fn editor(app: &mut PromptBoxApp, ui: &mut Ui) {
     // read back below and every later utterance would anchor there.
     let editor_id = egui::Id::new("prompt-editor");
     let synced_key = egui::Id::new("prompt-editor-synced-cursor");
-    let doc_cursor = app.core().doc().cursor();
+    let doc_cursor = f.editor.core().doc().cursor();
     let last_synced: Option<usize> = ui.data(|d| d.get_temp(synced_key));
     if last_synced != Some(doc_cursor) {
         let mut state = TextEdit::load_state(ui.ctx(), editor_id).unwrap_or_default();
@@ -947,7 +981,7 @@ fn editor(app: &mut PromptBoxApp, ui: &mut Ui) {
 
     if text != rendered {
         let (range, replacement) = diff_edit(&rendered, &text);
-        app.dispatch(AppAction::ReplaceText {
+        f.editor.dispatch(AppAction::ReplaceText {
             range,
             text: replacement,
         });
@@ -956,7 +990,7 @@ fn editor(app: &mut PromptBoxApp, ui: &mut Ui) {
     {
         let byte = byte_offset(&text, cursor.index.0);
         if byte != doc_cursor {
-            app.dispatch(AppAction::CursorMoved(byte));
+            f.editor.dispatch(AppAction::CursorMoved(byte));
             ui.data_mut(|d| d.insert_temp(synced_key, byte));
         }
     }

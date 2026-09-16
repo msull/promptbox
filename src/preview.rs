@@ -7,7 +7,7 @@
 use egui::text::{LayoutJob, TextFormat};
 use egui::{Color32, CornerRadius, FontId, Pos2, Vec2, ViewportBuilder, ViewportId};
 
-use crate::app::PromptBoxApp;
+use crate::app::Editor;
 
 /// Seconds without a change to the prompt before the preview closes.
 const IDLE_SECS: f64 = 60.0;
@@ -46,7 +46,7 @@ impl PreviewState {
 
 /// Draws the preview viewport while the core says it is open. Closes it
 /// when the prompt is empty or has been idle for [`IDLE_SECS`].
-pub fn draw(app: &mut PromptBoxApp, ctx: &egui::Context) {
+pub fn draw(app: &mut Editor, ctx: &egui::Context) {
     if !app.core().preview_open() {
         app.preview.rendered.clear();
         return;

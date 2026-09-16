@@ -1,29 +1,28 @@
-//! Orchestration: owns [`AppCore`], the port adapters, the recognizer, and
-//! the microphone. Maps effects to adapter calls and feeds their results
-//! back as actions. Rendering lives in [`crate::ui`].
+//! Orchestration. An [`Editor`] owns one document and the adapters that
+//! serve it (clipboard, history, AI, tools); the process-wide voice
+//! runtime lives in [`crate::voice::Voice`]. [`PromptBoxApp`] is the
+//! standalone window: one editor, the voice runtime bound to it, and
+//! the window chrome (pin, dock). A host that embeds Prompt Box keeps
+//! its own editors and one `Voice`, and wires them the way `PromptBoxApp`
+//! does. Rendering lives in [`crate::ui`].
 
 use std::path::PathBuf;
 use std::sync::mpsc::{Receiver, channel};
 use std::time::{Duration, Instant, SystemTime};
 
-use crate::adapters::audio::MicCapture;
 use crate::adapters::clipboard::SystemClipboard;
-use crate::adapters::fake_speech::{DEMO_SCRIPT, FakeDictation};
-use crate::adapters::model::{self, DEFAULT_MODEL, Download};
 use crate::adapters::openai::{self, OpenAiRewriter};
 use crate::adapters::persistence::FileStore;
-use crate::adapters::speech::WhisperEngine;
 use crate::adapters::typist::SystemTypist;
 use crate::core::action::RECENT_LIMIT;
 use crate::core::action::TypingPolicy;
-use crate::core::{AppAction, AppCore, Clock, Effect, Project, SessionStatus};
+use crate::core::{AppAction, AppCore, Clock, Effect, Project};
 use crate::ports::ai::Rewriter;
 use crate::ports::clipboard::Clipboard;
-use crate::ports::engine::{AudioChunk, EngineConfig, PushError, SpeechEngine};
 use crate::ports::history::{HistoryStore, Settings, ThemeChoice};
-use crate::ports::speech::SpeechEventKind;
 use crate::ports::tools::ToolRunner;
 use crate::ports::typist::Typist;
+pub use crate::voice::{Recognizer, Voice};
 
 /// Compact "docked" window size in points: the compact top bar, the
 /// bottom bar, roughly 200 px of prompt, and a little room below it.
@@ -67,59 +66,24 @@ impl Corner {
     }
 }
 
-/// Audio the app will hold for a slow engine before giving up (30 s).
-const BACKLOG_LIMIT_CHUNKS: usize = 1500;
-
-/// Where the whisper engine is in its lifecycle. Loading happens on a
-/// thread because a first Metal shader compile can take seconds.
-pub enum Recognizer {
-    NotLoaded,
-    Loading(Receiver<Result<WhisperEngine, String>>),
-    Ready(Box<WhisperEngine>),
-    Failed(String),
-}
-
-struct LiveSession {
-    mic: MicCapture,
-    audio_rx: Receiver<AudioChunk>,
-}
-
+/// One prompt: the document, its undo history, the AI and tool workers,
+/// and the settings that shape them. A host keeps one per place it
+/// composes prompts for.
 #[allow(clippy::struct_excessive_bools)] // independent lifecycle flags
-pub struct PromptBoxApp {
+pub struct Editor {
     core: AppCore,
     clipboard: Box<dyn Clipboard>,
     history: Box<dyn HistoryStore>,
     started: Instant,
     /// Added to the monotonic clock; tests use it to skip ahead.
     time_offset: Duration,
-    demo: Option<FakeDictation>,
-    next_demo_session: u64,
-    recognizer: Recognizer,
-    /// Set when the user asked to start before the engine finished loading.
-    start_when_ready: bool,
-    live: Option<LiveSession>,
-    /// Stop requested; polling the engine until its last events drain.
-    stopping: bool,
-    model_path: PathBuf,
-    download: Option<Download>,
-    live_chunks_seen: u64,
-    /// Chunks the engine could not accept yet; retried next frame.
-    backlog: std::collections::VecDeque<AudioChunk>,
     settings: Settings,
-    /// The window level must be applied once a viewport exists.
-    window_level_applied: bool,
-    /// Corner the window was last docked to; `None` until first use.
-    docked_corner: Option<Corner>,
-    /// Whether the Dock icon currently shows the recording badge.
-    dock_badge_shown: bool,
     /// Whether the voice-command help popup is open.
     pub show_commands: bool,
     /// Whether the settings window is open.
     pub show_settings: bool,
     /// The project editor, while open.
     pub project_editor: Option<ProjectEditor>,
-    /// Text and timing of the on-screen caption overlay.
-    pub caption: crate::caption::CaptionState,
     /// Text and timing of the whole-prompt preview overlay.
     pub preview: crate::preview::PreviewState,
     /// Text in the AI instruction box under the prompt.
@@ -135,23 +99,80 @@ pub struct PromptBoxApp {
     /// Manifests that failed to load, for Settings.
     pub tool_problems: Vec<String>,
     typist: Box<dyn Typist>,
-    /// Whether our own window is focused this frame (from egui).
+    /// Whether the window is focused this frame (from egui).
     window_focused: bool,
+    /// A voice command asked the runtime to stop; the host reads it with
+    /// [`Self::take_stop_request`].
+    stop_requested: bool,
+    /// Salt for every egui id the editor's widgets use, so a host can
+    /// draw several editors without their text state colliding.
+    id: egui::Id,
 }
 
-impl PromptBoxApp {
-    /// Production wiring: system clipboard and the platform data directory.
+impl Editor {
+    /// Wires explicit adapters (tests use fakes) and loads persisted state.
     #[must_use]
-    pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
-        crate::ui::install_symbol_font(&cc.egui_ctx);
-        let mut app = Self::with_services(
-            Box::new(SystemClipboard::default()),
-            Box::new(FileStore::new(FileStore::default_dir())),
-        );
-        app.typist = Box::new(SystemTypist::default());
-        app.tools_dir = Some(FileStore::default_dir().join("tools"));
-        app.reload_tools();
-        app
+    pub fn with_services(
+        clipboard: Box<dyn Clipboard>,
+        mut history: Box<dyn HistoryStore>,
+    ) -> Self {
+        let recent = history.load_recent(RECENT_LIMIT);
+        let draft = history.load_draft();
+        let projects = history.load_projects();
+        let settings = history.load_settings().unwrap_or_else(|e| {
+            log::warn!("{e}; using default settings");
+            Settings::default()
+        });
+        let mut editor = Self {
+            core: AppCore::new(),
+            clipboard,
+            history,
+            started: Instant::now(),
+            time_offset: Duration::ZERO,
+            settings,
+            show_commands: false,
+            show_settings: false,
+            project_editor: None,
+            preview: crate::preview::PreviewState::default(),
+            ai_instruction: String::new(),
+            settings_draft: Settings::default(),
+            rewriter: None,
+            ai_rx: None,
+            tool_runner: std::sync::Arc::new(crate::adapters::tools::ProcessToolRunner),
+            tools_dir: None,
+            tool_problems: Vec::new(),
+            typist: Box::new(crate::adapters::typist::FakeTypist::default()),
+            window_focused: true,
+            stop_requested: false,
+            id: egui::Id::new("promptbox"),
+        };
+        editor.settings_draft = editor.settings.clone();
+        editor.rebuild_rewriter();
+        editor.core.set_trigger(&editor.settings.trigger);
+        let wanted = editor.settings.project.clone();
+        editor.dispatch(AppAction::ProjectsLoaded(projects));
+        editor.core.select_project_named(&wanted);
+        editor.remember_selected_project();
+        editor.dispatch(AppAction::RecentLoaded(recent));
+        editor.dispatch(AppAction::DraftLoaded(draft));
+        editor
+    }
+
+    /// The salt for this editor's widget ids; `part` names the widget.
+    #[must_use]
+    pub fn id(&self, part: &str) -> egui::Id {
+        self.id.with(part)
+    }
+
+    /// Gives the editor its own id salt; a host with several editors
+    /// must make each unique.
+    pub fn set_id(&mut self, id: egui::Id) {
+        self.id = id;
+    }
+
+    /// Where tool manifests are read from; `reload_tools` reads them.
+    pub fn set_tools_dir(&mut self, dir: Option<PathBuf>) {
+        self.tools_dir = dir;
     }
 
     /// Re-reads every tool manifest from the tools folder.
@@ -197,104 +218,9 @@ impl PromptBoxApp {
             .expect("spawn worker thread");
     }
 
-    /// Wires explicit adapters (tests use fakes) and loads persisted state.
-    #[must_use]
-    pub fn with_services(
-        clipboard: Box<dyn Clipboard>,
-        mut history: Box<dyn HistoryStore>,
-    ) -> Self {
-        let recent = history.load_recent(RECENT_LIMIT);
-        let draft = history.load_draft();
-        let projects = history.load_projects();
-        let settings = history.load_settings().unwrap_or_else(|e| {
-            log::warn!("{e}; using default settings");
-            Settings::default()
-        });
-        let mut app = Self {
-            core: AppCore::new(),
-            clipboard,
-            history,
-            started: Instant::now(),
-            time_offset: Duration::ZERO,
-            demo: None,
-            next_demo_session: 1_000_000,
-            recognizer: Recognizer::NotLoaded,
-            start_when_ready: false,
-            live: None,
-            stopping: false,
-            model_path: model::model_path(DEFAULT_MODEL),
-            download: None,
-            live_chunks_seen: 0,
-            backlog: std::collections::VecDeque::new(),
-            settings,
-            window_level_applied: false,
-            docked_corner: None,
-            dock_badge_shown: false,
-            show_commands: false,
-            show_settings: false,
-            project_editor: None,
-            caption: crate::caption::CaptionState::default(),
-            preview: crate::preview::PreviewState::default(),
-            ai_instruction: String::new(),
-            settings_draft: Settings::default(),
-            rewriter: None,
-            ai_rx: None,
-            tool_runner: std::sync::Arc::new(crate::adapters::tools::ProcessToolRunner),
-            tools_dir: None,
-            tool_problems: Vec::new(),
-            typist: Box::new(crate::adapters::typist::FakeTypist::default()),
-            window_focused: true,
-        };
-        app.settings_draft = app.settings.clone();
-        app.rebuild_rewriter();
-        app.core.set_trigger(&app.settings.trigger);
-        let wanted = app.settings.project.clone();
-        app.dispatch(AppAction::ProjectsLoaded(projects));
-        app.core.select_project_named(&wanted);
-        app.remember_selected_project();
-        app.dispatch(AppAction::RecentLoaded(recent));
-        app.dispatch(AppAction::DraftLoaded(draft));
-        app
-    }
-
     #[must_use]
     pub fn core(&self) -> &AppCore {
         &self.core
-    }
-
-    #[must_use]
-    pub fn is_demo_running(&self) -> bool {
-        self.demo.is_some()
-    }
-
-    #[must_use]
-    pub fn is_live(&self) -> bool {
-        self.live.is_some() || self.stopping
-    }
-
-    #[must_use]
-    pub fn recognizer(&self) -> &Recognizer {
-        &self.recognizer
-    }
-
-    #[must_use]
-    pub fn model_path(&self) -> &PathBuf {
-        &self.model_path
-    }
-
-    #[must_use]
-    pub fn model_present(&self) -> bool {
-        self.model_path.exists()
-    }
-
-    #[must_use]
-    pub fn download(&self) -> Option<&Download> {
-        self.download.as_ref()
-    }
-
-    #[must_use]
-    pub fn always_on_top(&self) -> bool {
-        self.settings.always_on_top
     }
 
     /// Installs a typist directly (tests use a fake).
@@ -316,17 +242,20 @@ impl PromptBoxApp {
         &self.settings
     }
 
-    /// Typing-related settings persist immediately, like the theme.
-    pub fn set_type_on_send(&mut self, on: bool) {
-        self.settings.type_on_send = on;
-        self.settings_draft.type_on_send = on;
+    /// Changes a setting that takes effect at once and persists it.
+    pub fn update_settings(&mut self, change: impl FnOnce(&mut Settings)) {
+        change(&mut self.settings);
+        self.settings_draft = self.settings.clone();
         self.persist_settings();
     }
 
+    /// Typing-related settings persist immediately, like the theme.
+    pub fn set_type_on_send(&mut self, on: bool) {
+        self.update_settings(|s| s.type_on_send = on);
+    }
+
     pub fn set_submit_after_paste(&mut self, on: bool) {
-        self.settings.submit_after_paste = on;
-        self.settings_draft.submit_after_paste = on;
-        self.persist_settings();
+        self.update_settings(|s| s.submit_after_paste = on);
     }
 
     fn persist_settings(&mut self) {
@@ -344,7 +273,7 @@ impl PromptBoxApp {
         }
     }
 
-    /// Records whether our window is focused this frame.
+    /// Records whether the window is focused this frame.
     pub fn set_window_focused(&mut self, focused: bool) {
         self.window_focused = focused;
         self.core.set_typing_policy(self.typing_policy());
@@ -414,12 +343,8 @@ impl PromptBoxApp {
     /// Applies and persists the appearance immediately; unlike the API key
     /// or model there is nothing to validate, so no Save step is needed.
     pub fn set_theme(&mut self, ctx: &egui::Context, theme: ThemeChoice) {
-        self.settings.theme = theme;
-        self.settings_draft.theme = theme;
         Self::apply_theme(ctx, theme);
-        if let Err(e) = self.history.save_settings(&self.settings) {
-            log::warn!("could not save settings: {e}");
-        }
+        self.update_settings(|s| s.theme = theme);
     }
 
     /// Saves the settings-window draft and reapplies anything it affects.
@@ -433,80 +358,12 @@ impl PromptBoxApp {
         }
     }
 
-    /// Pins or unpins the window above others and remembers the choice.
-    pub fn set_always_on_top(&mut self, ctx: &egui::Context, on: bool) {
-        self.settings.always_on_top = on;
-        self.window_level_applied = false;
-        self.apply_window_level(ctx);
-        if let Err(e) = self.history.save_settings(&self.settings) {
-            log::warn!("could not save settings: {e}");
-        }
-    }
-
     /// Closes (or opens) the whole-prompt preview overlay.
     pub fn set_preview_open(&mut self, open: bool) {
         self.core.set_preview_open(open);
     }
 
-    #[must_use]
-    pub fn captions_enabled(&self) -> bool {
-        self.settings.captions
-    }
-
-    /// Shows or hides the on-screen caption overlay and remembers the choice.
-    pub fn set_captions_enabled(&mut self, on: bool) {
-        self.settings.captions = on;
-        if let Err(e) = self.history.save_settings(&self.settings) {
-            log::warn!("could not save settings: {e}");
-        }
-    }
-
-    #[must_use]
-    pub fn docked_corner(&self) -> Option<Corner> {
-        self.docked_corner
-    }
-
-    /// Shrinks the window to [`DOCK_SIZE`] and moves it to the next screen
-    /// corner (top-right first). Positions come from the current monitor's
-    /// size; on a secondary monitor egui does not expose the origin, so the
-    /// window lands relative to the primary one.
-    pub fn dock_next_corner(&mut self, ctx: &egui::Context) {
-        let corner = self.docked_corner.map_or(Corner::TopRight, Corner::next);
-        self.docked_corner = Some(corner);
-        let (monitor, inner, outer) = ctx.input(|i| {
-            let v = i.viewport();
-            (v.monitor_size, v.inner_rect, v.outer_rect)
-        });
-        ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(DOCK_SIZE));
-        let Some(monitor) = monitor else {
-            log::warn!("monitor size unknown; resized without moving");
-            return;
-        };
-        // Decorations (title bar) are the difference between outer and inner.
-        let chrome = match (inner, outer) {
-            (Some(i), Some(o)) => o.size() - i.size(),
-            _ => egui::vec2(0.0, 28.0),
-        };
-        let pos = corner.position(monitor, DOCK_SIZE + chrome, DOCK_MARGIN);
-        ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(pos));
-    }
-
-    fn apply_window_level(&mut self, ctx: &egui::Context) {
-        if self.window_level_applied {
-            return;
-        }
-        self.window_level_applied = true;
-        // The saved theme also needs a live viewport, so apply it here.
-        Self::apply_theme(ctx, self.settings.theme);
-        let level = if self.settings.always_on_top {
-            egui::WindowLevel::AlwaysOnTop
-        } else {
-            egui::WindowLevel::Normal
-        };
-        ctx.send_viewport_cmd(egui::ViewportCommand::WindowLevel(level));
-    }
-
-    /// Skips the app clock forward (tests only; the UI never calls this).
+    /// Skips the editor's clock forward (tests only; the UI never calls this).
     pub fn advance_time(&mut self, by: Duration) {
         self.time_offset += by;
     }
@@ -531,6 +388,15 @@ impl PromptBoxApp {
         }
     }
 
+    /// Replaces the whole prompt (a host priming a draft). One undo step.
+    pub fn set_text(&mut self, text: &str) {
+        let len = self.core.doc().rendered().len();
+        self.dispatch(AppAction::ReplaceText {
+            range: 0..len,
+            text: text.to_owned(),
+        });
+    }
+
     /// The single entry point for every user, speech, or timer action.
     pub fn dispatch(&mut self, action: AppAction) {
         let now = self.clock();
@@ -540,6 +406,41 @@ impl PromptBoxApp {
             if let Some(result) = self.run_effect(effect) {
                 self.dispatch(result);
             }
+        }
+    }
+
+    /// Dispatches what the voice runtime produced, in order.
+    pub fn apply(&mut self, actions: Vec<AppAction>) {
+        for action in actions {
+            self.dispatch(action);
+        }
+    }
+
+    /// True once, after a voice command asked to stop listening; the host
+    /// stops the runtime.
+    pub fn take_stop_request(&mut self) -> bool {
+        std::mem::take(&mut self.stop_requested)
+    }
+
+    /// Once per frame: the typing policy, the AI worker's result, the
+    /// clock tick. Returns how soon a repaint is wanted.
+    pub fn pump(&mut self) -> Option<Duration> {
+        self.core.set_typing_policy(self.typing_policy());
+        self.pump_ai();
+        self.dispatch(AppAction::Tick);
+        if self.ai_rx.is_some() {
+            return Some(Duration::from_millis(100));
+        }
+        self.core
+            .toast()
+            .map(|t| t.expires_at.saturating_sub(self.clock().mono) + Duration::from_millis(10))
+    }
+
+    fn pump_ai(&mut self) {
+        let Some(rx) = &self.ai_rx else { return };
+        if let Ok(action) = rx.try_recv() {
+            self.ai_rx = None;
+            self.dispatch(action);
         }
     }
 
@@ -559,7 +460,7 @@ impl PromptBoxApp {
                 AppAction::ProjectsSaveFinished(self.history.save_projects(&list))
             }
             Effect::StopListening => {
-                self.stop_listening();
+                self.stop_requested = true;
                 return None;
             }
             Effect::TypeIntoActiveApp { id, submit } => AppAction::TypeFinished {
@@ -644,47 +545,6 @@ impl PromptBoxApp {
         Some(result)
     }
 
-    // ---- live dictation ---------------------------------------------
-
-    /// Loads the model on a thread if needed, then opens the microphone.
-    pub fn start_listening(&mut self) {
-        if self.is_live() || self.demo.is_some() {
-            return;
-        }
-        if !self.model_present() {
-            self.dispatch(AppAction::EngineUnavailable(format!(
-                "No speech model at {}. Download it below.",
-                self.model_path.display()
-            )));
-            return;
-        }
-        match &self.recognizer {
-            Recognizer::Ready(_) => self.open_microphone(),
-            Recognizer::Loading(_) => self.start_when_ready = true,
-            Recognizer::NotLoaded | Recognizer::Failed(_) => {
-                self.start_when_ready = true;
-                self.load_engine();
-            }
-        }
-    }
-
-    fn load_engine(&mut self) {
-        let (tx, rx) = channel();
-        let path = self.model_path.clone();
-        let hint = self.vocabulary_hint();
-        std::thread::Builder::new()
-            .name("whisper-load".into())
-            .spawn(move || {
-                let cfg = EngineConfig {
-                    hint: Some(hint),
-                    ..EngineConfig::default()
-                };
-                let _ = tx.send(WhisperEngine::load(&path, cfg).map_err(|e| format!("{e:#}")));
-            })
-            .expect("spawn whisper load thread");
-        self.recognizer = Recognizer::Loading(rx);
-    }
-
     /// Opens the project editor on a copy of the current list.
     pub fn open_project_editor(&mut self) {
         self.project_editor = Some(ProjectEditor::from_projects(
@@ -722,7 +582,8 @@ impl PromptBoxApp {
     /// "Zevro ..." made it hallucinate trigger phrases. Trigger renderings
     /// are tolerated by the phonetic matching instead. (The hint is read
     /// once, when the engine loads.)
-    fn vocabulary_hint(&self) -> String {
+    #[must_use]
+    pub fn vocabulary_hint(&self) -> String {
         let mut hint = self.core.project().recognition_terms().join(", ");
         if !hint.is_empty() {
             hint.push_str(". ");
@@ -732,268 +593,245 @@ impl PromptBoxApp {
         );
         hint
     }
+}
 
-    fn open_microphone(&mut self) {
-        let Recognizer::Ready(engine) = &mut self.recognizer else {
+/// The standalone window's chrome: pinned above others, docked to a
+/// corner. Meaningless when Prompt Box is embedded in another window.
+#[derive(Debug, Default)]
+pub struct WindowState {
+    /// The window level must be applied once a viewport exists.
+    level_applied: bool,
+    /// Corner the window was last docked to; `None` until first use.
+    docked_corner: Option<Corner>,
+}
+
+impl WindowState {
+    #[must_use]
+    pub fn docked_corner(&self) -> Option<Corner> {
+        self.docked_corner
+    }
+
+    /// Pins or unpins the window above others and remembers the choice.
+    pub fn set_always_on_top(&mut self, ctx: &egui::Context, editor: &mut Editor, on: bool) {
+        editor.update_settings(|s| s.always_on_top = on);
+        self.level_applied = false;
+        self.apply_window_level(ctx, editor.settings());
+    }
+
+    /// Shrinks the window to [`DOCK_SIZE`] and moves it to the next screen
+    /// corner (top-right first). Positions come from the current monitor's
+    /// size; on a secondary monitor egui does not expose the origin, so the
+    /// window lands relative to the primary one.
+    pub fn dock_next_corner(&mut self, ctx: &egui::Context) {
+        let corner = self.docked_corner.map_or(Corner::TopRight, Corner::next);
+        self.docked_corner = Some(corner);
+        let (monitor, inner, outer) = ctx.input(|i| {
+            let v = i.viewport();
+            (v.monitor_size, v.inner_rect, v.outer_rect)
+        });
+        ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(DOCK_SIZE));
+        let Some(monitor) = monitor else {
+            log::warn!("monitor size unknown; resized without moving");
             return;
         };
-        let capture = match std::env::var_os("PROMPTBOX_FAKE_MIC") {
-            Some(path) => MicCapture::from_wav(std::path::Path::new(&path)),
-            None => MicCapture::start(),
+        // Decorations (title bar) are the difference between outer and inner.
+        let chrome = match (inner, outer) {
+            (Some(i), Some(o)) => o.size() - i.size(),
+            _ => egui::vec2(0.0, 28.0),
         };
-        match capture {
-            Ok((mic, audio_rx)) => match engine.start() {
-                Ok(session) => {
-                    log::info!("listening on {}", mic.device_name);
-                    self.live = Some(LiveSession { mic, audio_rx });
-                    self.dispatch(AppAction::SessionStarted(session));
-                }
-                Err(e) => {
-                    log::warn!("engine start failed: {e:#}");
-                    self.dispatch(AppAction::EngineUnavailable(format!("{e:#}")));
-                }
-            },
-            Err(e) => {
-                log::warn!("microphone open failed: {e}");
-                self.dispatch(AppAction::EngineUnavailable(format!("Microphone: {e}")));
-            }
-        }
+        let pos = corner.position(monitor, DOCK_SIZE + chrome, DOCK_MARGIN);
+        ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(pos));
     }
 
-    /// Closes the microphone now; the session ends once the engine has
-    /// emitted its final events (see `pump`).
-    pub fn stop_listening(&mut self) {
-        if self.live.take().is_some() {
-            if let Recognizer::Ready(engine) = &mut self.recognizer {
-                // Flush what we can before asking the worker to finish.
-                while let Some(c) = self.backlog.pop_front() {
-                    if engine.push_audio(c).is_err() {
-                        break;
-                    }
-                }
-                self.backlog.clear();
-                engine.stop();
-            }
-            self.stopping = true;
-            self.dispatch(AppAction::SessionStopping);
-        }
-    }
-
-    pub fn start_download(&mut self) {
-        if self.download.is_none() && !self.model_present() {
-            self.download = Some(Download::start(DEFAULT_MODEL));
-        }
-    }
-
-    // ---- demo ---------------------------------------------------------
-
-    /// Starts scripted dictation as a new session. `with_gap` injects an
-    /// audio gap so the degraded state can be seen.
-    pub fn start_demo(&mut self, with_gap: bool) {
-        if self.is_live() {
+    fn apply_window_level(&mut self, ctx: &egui::Context, settings: &Settings) {
+        if self.level_applied {
             return;
         }
-        self.stop_demo();
-        let session = self.next_demo_session;
-        self.next_demo_session += 1;
-        self.demo = Some(FakeDictation::new(
-            session,
-            DEMO_SCRIPT,
-            self.clock().mono,
-            with_gap,
-        ));
-        self.dispatch(AppAction::SessionStarted(session));
-    }
-
-    pub fn stop_demo(&mut self) {
-        if self.demo.take().is_some() {
-            self.dispatch(AppAction::SessionStopped);
-        }
-    }
-
-    // ---- per-frame ----------------------------------------------------
-
-    /// Called once per frame: moves audio into the engine, drains speech
-    /// events, ticks the clock. Returns how soon a repaint is wanted.
-    pub fn pump(&mut self) -> Option<Duration> {
-        self.core.set_typing_policy(self.typing_policy());
-        self.pump_recognizer_load();
-        self.pump_ai();
-        self.pump_download();
-        self.pump_live();
-        self.pump_demo();
-        self.dispatch(AppAction::Tick);
-        if self.is_live() || self.demo.is_some() || self.download.is_some() {
-            return Some(Duration::from_millis(20));
-        }
-        if matches!(self.recognizer, Recognizer::Loading(_)) || self.ai_rx.is_some() {
-            return Some(Duration::from_millis(100));
-        }
-        self.core
-            .toast()
-            .map(|t| t.expires_at.saturating_sub(self.clock().mono) + Duration::from_millis(10))
-    }
-
-    fn pump_ai(&mut self) {
-        let Some(rx) = &self.ai_rx else { return };
-        if let Ok(action) = rx.try_recv() {
-            self.ai_rx = None;
-            self.dispatch(action);
-        }
-    }
-
-    fn pump_recognizer_load(&mut self) {
-        let Recognizer::Loading(rx) = &self.recognizer else {
-            return;
+        self.level_applied = true;
+        // The saved theme also needs a live viewport, so apply it here.
+        Editor::apply_theme(ctx, settings.theme);
+        let level = if settings.always_on_top {
+            egui::WindowLevel::AlwaysOnTop
+        } else {
+            egui::WindowLevel::Normal
         };
-        match rx.try_recv() {
-            Ok(Ok(engine)) => {
-                self.recognizer = Recognizer::Ready(Box::new(engine));
-                if std::mem::take(&mut self.start_when_ready) {
-                    self.open_microphone();
-                }
-            }
-            Ok(Err(e)) => {
-                log::warn!("model load failed: {e}");
-                self.recognizer = Recognizer::Failed(e.clone());
-                self.start_when_ready = false;
-                self.dispatch(AppAction::EngineUnavailable(format!(
-                    "Model failed to load: {e}"
-                )));
-            }
-            Err(_) => {}
-        }
-    }
-
-    fn pump_download(&mut self) {
-        let Some(d) = &self.download else { return };
-        match d.try_result() {
-            Some(Ok(_)) => {
-                self.download = None;
-                self.dispatch(AppAction::AcknowledgeStatus);
-            }
-            Some(Err(e)) => {
-                self.download = None;
-                self.dispatch(AppAction::EngineUnavailable(format!(
-                    "Download failed: {e}"
-                )));
-            }
-            None => {}
-        }
-    }
-
-    fn pump_live(&mut self) {
-        let mic_error = self
-            .live
-            .as_ref()
-            .and_then(|l| l.mic.stats().error.lock().expect("mic mutex").take());
-        if let Some(e) = mic_error {
-            self.stop_listening();
-            self.dispatch(AppAction::EngineUnavailable(format!(
-                "Microphone error: {e}"
-            )));
-            return;
-        }
-        if let Some(live) = &self.live {
-            let level = live.mic.stats().level_db();
-            let mut chunks = Vec::new();
-            while let Ok(c) = live.audio_rx.try_recv() {
-                chunks.push(c);
-            }
-            let n_chunks = chunks.len() as u64;
-            self.backlog.extend(chunks);
-            if let Recognizer::Ready(engine) = &mut self.recognizer {
-                while let Some(c) = self.backlog.pop_front() {
-                    if let Err(PushError::QueueFull) = engine.push_audio(c.clone()) {
-                        self.backlog.push_front(c);
-                        break;
-                    }
-                }
-                // Only give up if the engine has been stuck for a long time;
-                // the resulting offset jump surfaces as AudioGap.
-                if self.backlog.len() > BACKLOG_LIMIT_CHUNKS {
-                    let drop = self.backlog.len() - BACKLOG_LIMIT_CHUNKS;
-                    log::warn!("engine stuck; dropping {drop} chunks of audio");
-                    self.backlog.drain(..drop);
-                }
-            }
-            if self.core.doc().is_empty() || level > crate::core::action::VOICE_DB {
-                log::trace!(
-                    "mic level {level:.0} dBFS, {} chunks",
-                    self.live_chunks_seen
-                );
-            }
-            self.live_chunks_seen += n_chunks;
-            self.dispatch(AppAction::AudioLevel(level));
-        }
-        if self.live.is_some() || self.stopping {
-            let mut events = Vec::new();
-            let mut drained = false;
-            if let Recognizer::Ready(engine) = &mut self.recognizer {
-                events = engine.poll(64);
-                if self.stopping && events.is_empty() {
-                    drained = engine.is_drained();
-                }
-            }
-            for ev in events {
-                match &ev.kind {
-                    SpeechEventKind::Partial { .. } | SpeechEventKind::VoiceEnded { .. } => {
-                        log::debug!("speech {}", ev.label());
-                    }
-                    _ => log::info!("speech {}", ev.label()),
-                }
-                self.dispatch(AppAction::SpeechEventReceived(ev));
-            }
-            if drained {
-                self.stopping = false;
-                self.dispatch(AppAction::SessionStopped);
-            }
-        }
-    }
-
-    fn pump_demo(&mut self) {
-        let now = self.clock().mono;
-        if let Some(demo) = &mut self.demo {
-            let events = demo.poll(now);
-            let finished = demo.is_finished();
-            for ev in events {
-                self.dispatch(AppAction::SpeechEventReceived(ev));
-            }
-            if finished {
-                self.stop_demo();
-            }
-        }
+        ctx.send_viewport_cmd(egui::ViewportCommand::WindowLevel(level));
     }
 }
 
+/// The standalone app: one editor with the voice runtime bound to it.
+pub struct PromptBoxApp {
+    pub editor: Editor,
+    pub voice: Voice,
+    pub window: WindowState,
+}
+
 impl PromptBoxApp {
-    /// Keeps the Dock badge in step with whether audio is being captured.
-    /// Only touches `AppKit` when the state actually changes.
-    fn sync_dock_badge(&mut self) {
-        let recording = matches!(
-            self.core.status(),
-            SessionStatus::Listening | SessionStatus::Finishing
+    #[must_use]
+    pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
+        crate::ui::install_symbol_font(&cc.egui_ctx);
+        let mut app = Self::with_services(
+            Box::new(SystemClipboard::default()),
+            Box::new(FileStore::new(FileStore::default_dir())),
         );
-        if recording != self.dock_badge_shown {
-            crate::adapters::dock::set_recording_badge(recording);
-            self.dock_badge_shown = recording;
+        app.editor.set_typist(Box::new(SystemTypist::default()));
+        app.editor
+            .set_tools_dir(Some(FileStore::default_dir().join("tools")));
+        app.editor.reload_tools();
+        app
+    }
+
+    /// Wires explicit adapters (tests use fakes) and loads persisted state.
+    #[must_use]
+    pub fn with_services(clipboard: Box<dyn Clipboard>, history: Box<dyn HistoryStore>) -> Self {
+        let editor = Editor::with_services(clipboard, history);
+        let mut voice = Voice::default();
+        voice.set_captions_enabled(editor.settings().captions);
+        Self {
+            editor,
+            voice,
+            window: WindowState::default(),
+        }
+    }
+
+    #[must_use]
+    pub fn core(&self) -> &AppCore {
+        self.editor.core()
+    }
+
+    /// The single entry point for every user, speech, or timer action.
+    pub fn dispatch(&mut self, action: AppAction) {
+        self.editor.dispatch(action);
+    }
+
+    #[must_use]
+    pub fn is_live(&self) -> bool {
+        self.voice.is_live()
+    }
+
+    #[must_use]
+    pub fn is_demo_running(&self) -> bool {
+        self.voice.is_demo_running()
+    }
+
+    pub fn start_listening(&mut self) {
+        let actions = self.voice.start(self.editor.vocabulary_hint());
+        self.editor.apply(actions);
+    }
+
+    pub fn stop_listening(&mut self) {
+        let actions = self.voice.stop();
+        self.editor.apply(actions);
+    }
+
+    pub fn start_demo(&mut self, with_gap: bool) {
+        let actions = self.voice.start_demo(with_gap);
+        self.editor.apply(actions);
+    }
+
+    pub fn stop_demo(&mut self) {
+        let actions = self.voice.stop_demo();
+        self.editor.apply(actions);
+    }
+
+    /// Skips both clocks forward (tests only; the UI never calls this).
+    pub fn advance_time(&mut self, by: Duration) {
+        self.editor.advance_time(by);
+        self.voice.advance_time(by);
+    }
+
+    #[must_use]
+    pub fn settings(&self) -> &Settings {
+        self.editor.settings()
+    }
+
+    #[must_use]
+    pub fn theme(&self) -> ThemeChoice {
+        self.editor.theme()
+    }
+
+    #[must_use]
+    pub fn always_on_top(&self) -> bool {
+        self.editor.settings().always_on_top
+    }
+
+    #[must_use]
+    pub fn docked_corner(&self) -> Option<Corner> {
+        self.window.docked_corner()
+    }
+
+    #[must_use]
+    pub fn api_key_source(&self) -> &'static str {
+        self.editor.api_key_source()
+    }
+
+    #[must_use]
+    pub fn ai_available(&self) -> bool {
+        self.editor.ai_available()
+    }
+
+    pub fn set_typist(&mut self, typist: Box<dyn Typist>) {
+        self.editor.set_typist(typist);
+    }
+
+    pub fn set_rewriter(&mut self, rewriter: std::sync::Arc<dyn Rewriter>) {
+        self.editor.set_rewriter(rewriter);
+    }
+
+    pub fn set_tool_runner(&mut self, runner: std::sync::Arc<dyn ToolRunner>) {
+        self.editor.set_tool_runner(runner);
+    }
+
+    pub fn set_tools(&mut self, tools: Vec<crate::ports::tools::ToolManifest>) {
+        self.editor.set_tools(tools);
+    }
+
+    pub fn set_window_focused(&mut self, focused: bool) {
+        self.editor.set_window_focused(focused);
+    }
+
+    /// Once per frame: the runtime's audio and events into the editor,
+    /// then the editor's own workers and clock.
+    pub fn pump(&mut self) -> Option<Duration> {
+        let pumped = self.voice.pump();
+        self.editor.apply(pumped.actions);
+        let editor = self.editor.pump();
+        if self.editor.take_stop_request() {
+            self.stop_listening();
+        }
+        match (pumped.repaint, editor) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (a, b) => a.or(b),
         }
     }
 }
 
 impl eframe::App for PromptBoxApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
-        self.apply_window_level(ui.ctx());
+        self.window
+            .apply_window_level(ui.ctx(), self.editor.settings());
         let focused = ui.ctx().input(|i| i.viewport().focused.unwrap_or(true));
-        self.set_window_focused(focused);
+        self.editor.set_window_focused(focused);
         if let Some(delay) = self.pump() {
             ui.ctx().request_repaint_after(delay);
         }
-        self.sync_dock_badge();
-        crate::ui::draw(self, ui);
+        self.voice.sync_dock_badge(self.editor.core().status());
+        let mut frame = crate::ui::Frame {
+            editor: &mut self.editor,
+            voice: &mut self.voice,
+            window: Some(&mut self.window),
+            bound: true,
+            listen: None,
+        };
+        crate::ui::draw(&mut frame, ui);
+        match frame.listen {
+            Some(true) => self.start_listening(),
+            Some(false) => self.stop_listening(),
+            None => {}
+        }
         let ctx = ui.ctx().clone();
-        crate::caption::draw(self, &ctx);
-        crate::preview::draw(self, &ctx);
+        crate::caption::draw(&mut self.voice, self.editor.core(), &ctx);
+        crate::preview::draw(&mut self.editor, &ctx);
     }
 
     /// Fully transparent: the window's panels paint their own opaque

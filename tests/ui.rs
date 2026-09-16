@@ -244,10 +244,10 @@ fn commands_button_opens_the_voice_command_list() {
     harness.get_by_label("Voice commands");
     harness.get_by_label("Delete the last sentence");
     harness.get_by_label("Copy to the clipboard and clear");
-    assert!(harness.state().show_commands);
+    assert!(harness.state().editor.show_commands);
     harness.get_by_label("Commands").click();
     harness.run_steps(2);
-    assert!(!harness.state().show_commands);
+    assert!(!harness.state().editor.show_commands);
 }
 
 fn wait_for_ai(harness: &mut Harness<'static, PromptBoxApp>) {
@@ -303,7 +303,7 @@ fn ai_instruction_box_sends_and_failure_keeps_prompt() {
     wait_for_ai(&mut harness);
     assert_eq!(harness.state().core().doc().committed(), "keep me");
     harness.get_by_label("AI rewrite failed: quota exceeded");
-    assert_eq!(harness.state().ai_instruction, "");
+    assert_eq!(harness.state().editor.ai_instruction, "");
 }
 
 #[test]
@@ -388,7 +388,7 @@ fn project_editor_saves_persists_and_corrects_dictation() {
     harness.run_steps(2);
     harness.get_by_label("Save").click();
     harness.run_steps(4);
-    assert!(harness.state().project_editor.is_none());
+    assert!(harness.state().editor.project_editor.is_none());
     assert_eq!(harness.state().core().project().name, "Acme");
     assert_eq!(harness.state().settings().project, "Acme");
     let saved = harness.state().core().projects();
@@ -517,7 +517,7 @@ fn settings_window_saves_api_key_and_enables_ai() {
     // The window's grid needs a few frames to settle before its widgets
     // stop moving.
     harness.run_steps(4);
-    harness.state_mut().settings_draft.openai_api_key = "sk-test".into();
+    harness.state_mut().editor.settings_draft.openai_api_key = "sk-test".into();
     harness.get_by_label("Save").click();
     harness.run_steps(2);
     assert!(harness.state().ai_available());
