@@ -754,6 +754,22 @@ pub struct PromptBoxApp {
 }
 
 impl PromptBoxApp {
+    /// Where the caption and preview overlays go: the screen chosen in
+    /// Settings, else the one this window is on.
+    fn overlay_area(&self, ctx: &egui::Context) -> egui::Rect {
+        let (root, monitor) = ctx.input(|i| (i.viewport().outer_rect, i.viewport().monitor_size));
+        let fallback = egui::Rect::from_min_size(
+            egui::Pos2::ZERO,
+            monitor.unwrap_or(egui::Vec2::new(1920.0, 1080.0)),
+        );
+        crate::adapters::screens::overlay_area(
+            &crate::adapters::screens::screens(),
+            &self.editor.settings().overlay_screen,
+            root,
+            fallback,
+        )
+    }
+
     #[must_use]
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
         crate::ui::install_symbol_font(&cc.egui_ctx);
@@ -919,8 +935,9 @@ impl eframe::App for PromptBoxApp {
             None => {}
         }
         let ctx = ui.ctx().clone();
-        crate::caption::draw(&mut self.voice, self.editor.core(), &ctx);
-        crate::preview::draw(&mut self.editor, &ctx);
+        let area = self.overlay_area(&ctx);
+        crate::caption::draw(&mut self.voice, self.editor.core(), &ctx, area);
+        crate::preview::draw(&mut self.editor, &ctx, area);
     }
 
     /// Fully transparent: the window's panels paint their own opaque

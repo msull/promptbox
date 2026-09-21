@@ -89,7 +89,8 @@ bottom-left, top-left). Below about 460 px wide the top bar hides the
 project picker and Debug menu so the window can sit small in a corner.
 
 **CC** shows what you are saying as closed captions: a translucent bar at
-the bottom of the screen Prompt Box is on, floating above every window and
+the bottom of the screen (the one Prompt Box is on, or the screen chosen
+under "Overlays on" in Settings), floating above every window and
 ignoring the mouse, so you can keep working in another app and still see
 what is coming in. It shows the live (provisional) text preceded by the
 last one or two finalized sentences, which linger for several seconds so
@@ -99,7 +100,7 @@ holds for a moment after the text stops changing, then fades out. A
 recognized voice command stays in the bar for a moment in blue (red when it
 was not understood) before it disappears, so you can see what was heard.
 
-**Zevro preview** opens a larger panel in the middle of the same screen with
+**Zevro preview** opens a larger panel in the middle of that screen with
 the whole prompt (live text in amber), also floating and click-through, so
 you can review it before "Zevro send" without leaving the app you are in.
 It stays until you say "preview" again, send or clear the prompt, or the
@@ -244,8 +245,11 @@ permissions: the folder is the trust boundary.
 
 ⚙ in the top bar opens Settings: OpenAI API key (stored masked), model,
 and voice trigger word, which Save persists; and the Send paste options
-and appearance (Auto follows the system, or Light / Dark), which persist
-as soon as they are clicked.
+appearance (Auto follows the system, or Light / Dark), and "Overlays on"
+(which screen the caption bar and preview panel use: the one Prompt Box is
+on, or a specific display by name), which persist as soon as they are
+clicked. A chosen display that is not connected falls back to the window's
+screen until it returns.
 
 Everything lives in the platform data directory, `~/Library/Application
 Support/promptbox` on macOS:

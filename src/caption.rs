@@ -33,7 +33,8 @@ const FLASH_COLOR: Color32 = Color32::from_rgb(110, 170, 255);
 const FLASH_ERROR_COLOR: Color32 = Color32::from_rgb(255, 120, 110);
 /// Caption window size and its inset from the bottom of the monitor.
 const BAR_SIZE: Vec2 = Vec2::new(900.0, 120.0);
-const BOTTOM_INSET: f32 = 80.0;
+/// Inset from the bottom of the usable screen area (already above the Dock).
+const BOTTOM_INSET: f32 = 24.0;
 const FONT_SIZE: f32 = 28.0;
 const PADDING: f32 = 24.0;
 const BOX_ALPHA: f32 = 170.0;
@@ -178,8 +179,10 @@ impl CaptionState {
 }
 
 /// Updates the caption from the document and draws the overlay viewport
-/// while there is something to show. Call once per frame from the root.
-pub fn draw(voice: &mut Voice, core: &AppCore, ctx: &egui::Context) {
+/// while there is something to show, at the bottom of `area` (the chosen
+/// screen's usable rect, see `adapters::screens`). Call once per frame
+/// from the root.
+pub fn draw(voice: &mut Voice, core: &AppCore, ctx: &egui::Context, area: egui::Rect) {
     let now = ctx.input(|i| i.time);
     if voice.captions_enabled() && (voice.is_live() || voice.is_demo_running()) {
         let doc = core.doc();
@@ -197,12 +200,9 @@ pub fn draw(voice: &mut Voice, core: &AppCore, ctx: &egui::Context) {
     // Keep animating the fade even when nothing else repaints.
     ctx.request_repaint_after(std::time::Duration::from_millis(50));
 
-    let monitor = ctx
-        .input(|i| i.viewport().monitor_size)
-        .unwrap_or(Vec2::new(1920.0, 1080.0));
     let pos = Pos2::new(
-        (monitor.x - BAR_SIZE.x) / 2.0,
-        monitor.y - BAR_SIZE.y - BOTTOM_INSET,
+        area.center().x - BAR_SIZE.x / 2.0,
+        area.max.y - BAR_SIZE.y - BOTTOM_INSET,
     );
     let pieces = voice.caption.pieces();
 

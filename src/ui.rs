@@ -389,6 +389,32 @@ fn send_settings(f: &mut Frame<'_>, ui: &mut Ui) {
     });
 }
 
+/// Which screen the caption and preview overlays use; persists on change.
+fn overlay_screen_picker(f: &mut Frame<'_>, ui: &mut Ui) {
+    let current = f.editor.settings().overlay_screen.clone();
+    let screens = crate::adapters::screens::screens();
+    let shown = if current.is_empty() {
+        "Same screen as Prompt Box".to_owned()
+    } else if screens.iter().any(|s| s.name == current) {
+        current.clone()
+    } else {
+        format!("{current} (not connected)")
+    };
+    let mut chosen = current.clone();
+    egui::ComboBox::from_id_salt(f.editor.id("overlay-screen"))
+        .selected_text(shown)
+        .width(240.0)
+        .show_ui(ui, |ui| {
+            ui.selectable_value(&mut chosen, String::new(), "Same screen as Prompt Box");
+            for s in &screens {
+                ui.selectable_value(&mut chosen, s.name.clone(), &s.name);
+            }
+        });
+    if chosen != current {
+        f.editor.update_settings(|s| s.overlay_screen = chosen);
+    }
+}
+
 fn settings_window(f: &mut Frame<'_>, ui: &mut Ui) {
     if !f.editor.show_settings {
         return;
@@ -431,6 +457,9 @@ fn settings_window(f: &mut Frame<'_>, ui: &mut Ui) {
                     ui.end_row();
                     ui.label("Send");
                     send_settings(f, ui);
+                    ui.end_row();
+                    ui.label("Overlays on");
+                    overlay_screen_picker(f, ui);
                     ui.end_row();
                     ui.label("Appearance");
                     ui.horizontal(|ui| {

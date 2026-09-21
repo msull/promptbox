@@ -56,6 +56,10 @@ pub struct Settings {
     /// Show the live utterance as closed captions at the bottom of the screen.
     #[serde(default = "default_true")]
     pub captions: bool,
+    /// Display name of the screen for the caption and preview overlays;
+    /// empty means whichever screen the window is on.
+    #[serde(default)]
+    pub overlay_screen: String,
 }
 
 fn default_true() -> bool {
@@ -74,6 +78,7 @@ impl Default for Settings {
             submit_after_paste: true,
             project: String::new(),
             captions: true,
+            overlay_screen: String::new(),
         }
     }
 }

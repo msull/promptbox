@@ -5,7 +5,7 @@
 //! prompt is sent or cleared, or the prompt has not changed for a while.
 
 use egui::text::{LayoutJob, TextFormat};
-use egui::{Color32, CornerRadius, FontId, Pos2, Vec2, ViewportBuilder, ViewportId};
+use egui::{Color32, CornerRadius, FontId, Vec2, ViewportBuilder, ViewportId};
 
 use crate::app::Editor;
 
@@ -46,7 +46,7 @@ impl PreviewState {
 
 /// Draws the preview viewport while the core says it is open. Closes it
 /// when the prompt is empty or has been idle for [`IDLE_SECS`].
-pub fn draw(app: &mut Editor, ctx: &egui::Context) {
+pub fn draw(app: &mut Editor, ctx: &egui::Context, area: egui::Rect) {
     if !app.core().preview_open() {
         app.preview.rendered.clear();
         return;
@@ -64,17 +64,11 @@ pub fn draw(app: &mut Editor, ctx: &egui::Context) {
     // Wake up to close on idle even if nothing else repaints.
     ctx.request_repaint_after(std::time::Duration::from_secs(1));
 
-    let monitor = ctx
-        .input(|i| i.viewport().monitor_size)
-        .unwrap_or(Vec2::new(1920.0, 1080.0));
     let size = Vec2::new(
-        (monitor.x * WIDTH_FRACTION).min(MAX_WIDTH),
-        monitor.y * HEIGHT_FRACTION,
+        (area.width() * WIDTH_FRACTION).min(MAX_WIDTH),
+        area.height() * HEIGHT_FRACTION,
     );
-    let pos = Pos2::new(
-        (monitor.x - size.x) / 2.0,
-        (monitor.y - size.y) / 2.0 - 40.0,
-    );
+    let pos = area.center() - size / 2.0 - Vec2::new(0.0, 40.0);
 
     ctx.show_viewport_immediate(
         ViewportId::from_hash_of("prompt-preview"),

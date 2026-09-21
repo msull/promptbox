@@ -9,6 +9,7 @@ pub mod model;
 pub mod openai;
 pub mod persistence;
 pub mod saver;
+pub mod screens;
 pub mod sink;
 pub mod speech;
 pub mod tools;
