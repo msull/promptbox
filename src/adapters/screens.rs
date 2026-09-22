@@ -5,7 +5,7 @@
 //! Cocoa's origin is the primary screen's bottom-left, y up). Elsewhere the
 //! list is empty and overlays fall back to the current monitor.
 
-use egui::{Pos2, Rect, Vec2};
+use egui::Rect;
 
 /// One attached display in global logical points.
 #[derive(Debug, Clone, PartialEq)]
@@ -55,7 +55,8 @@ pub fn overlay_area(screens: &[Screen], chosen: &str, root: Option<Rect>, fallba
 
 #[cfg(target_os = "macos")]
 mod macos {
-    use super::{Pos2, Rect, Screen, Vec2};
+    use super::Screen;
+    use egui::{Pos2, Rect, Vec2};
     use objc2::MainThreadMarker;
     use objc2_app_kit::NSScreen;
     use objc2_foundation::NSRect;
@@ -93,6 +94,7 @@ mod macos {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use egui::{Pos2, Vec2};
 
     fn screen(name: &str, x: f32, y: f32, w: f32, h: f32) -> Screen {
         let frame = Rect::from_min_size(Pos2::new(x, y), Vec2::new(w, h));
