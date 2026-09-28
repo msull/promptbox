@@ -32,9 +32,12 @@ const FLASH_SECS: f64 = 1.5;
 const FLASH_COLOR: Color32 = Color32::from_rgb(110, 170, 255);
 const FLASH_ERROR_COLOR: Color32 = Color32::from_rgb(255, 120, 110);
 /// Caption window size and its inset from the bottom of the monitor.
-const BAR_SIZE: Vec2 = Vec2::new(900.0, 120.0);
+/// The viewport is tall enough for several lines; the box is anchored to
+/// its bottom edge and grows upward, so the window's own edge never clips
+/// the text.
+const BAR_SIZE: Vec2 = Vec2::new(900.0, 260.0);
 /// Inset from the bottom of the usable screen area (already above the Dock).
-const BOTTOM_INSET: f32 = 24.0;
+const BOTTOM_INSET: f32 = 56.0;
 const FONT_SIZE: f32 = 28.0;
 const PADDING: f32 = 24.0;
 const BOX_ALPHA: f32 = 170.0;
@@ -259,12 +262,14 @@ fn paint(ui: &mut egui::Ui, pieces: &[Piece], alpha: f32) {
     let galley = painter.layout_job(job);
     let visible_h = rect.height() - PADDING;
     let overflow = (galley.size().y - visible_h).max(0.0);
-    let box_rect = egui::Rect::from_center_size(
-        rect.center(),
-        Vec2::new(
-            galley.size().x + 2.0 * PADDING,
-            galley.size().y.min(visible_h) + PADDING,
-        ),
+    let box_size = Vec2::new(
+        galley.size().x + 2.0 * PADDING,
+        galley.size().y.min(visible_h) + PADDING,
+    );
+    // Bottom-centre of the viewport: a longer caption grows upward.
+    let box_rect = egui::Rect::from_min_size(
+        Pos2::new(rect.center().x - box_size.x / 2.0, rect.max.y - box_size.y),
+        box_size,
     );
     painter.rect_filled(
         box_rect,
