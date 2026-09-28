@@ -60,6 +60,10 @@ pub struct Settings {
     /// empty means whichever screen the window is on.
     #[serde(default)]
     pub overlay_screen: String,
+    /// Open the whole-prompt preview whenever listening starts and close
+    /// it when listening stops.
+    #[serde(default)]
+    pub auto_preview: bool,
 }
 
 fn default_true() -> bool {
@@ -79,6 +83,7 @@ impl Default for Settings {
             project: String::new(),
             captions: true,
             overlay_screen: String::new(),
+            auto_preview: false,
         }
     }
 }

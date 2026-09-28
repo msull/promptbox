@@ -415,6 +415,21 @@ fn overlay_screen_picker(f: &mut Frame<'_>, ui: &mut Ui) {
     }
 }
 
+/// Whether the whole-prompt preview opens by itself while listening.
+fn auto_preview_toggle(f: &mut Frame<'_>, ui: &mut Ui) {
+    let mut auto = f.editor.settings().auto_preview;
+    if ui
+        .checkbox(&mut auto, "Open while listening")
+        .on_hover_text(
+            "Show the whole-prompt preview whenever listening is on; \
+             \"Zevro preview\" still toggles it by hand",
+        )
+        .changed()
+    {
+        f.editor.update_settings(|s| s.auto_preview = auto);
+    }
+}
+
 fn settings_window(f: &mut Frame<'_>, ui: &mut Ui) {
     if !f.editor.show_settings {
         return;
@@ -460,6 +475,9 @@ fn settings_window(f: &mut Frame<'_>, ui: &mut Ui) {
                     ui.end_row();
                     ui.label("Overlays on");
                     overlay_screen_picker(f, ui);
+                    ui.end_row();
+                    ui.label("Preview");
+                    auto_preview_toggle(f, ui);
                     ui.end_row();
                     ui.label("Appearance");
                     ui.horizontal(|ui| {

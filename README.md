@@ -101,10 +101,17 @@ recognized voice command stays in the bar for a moment in blue (red when it
 was not understood) before it disappears, so you can see what was heard.
 
 **Zevro preview** opens a larger panel in the middle of that screen with
-the whole prompt (live text in amber), also floating and click-through, so
-you can review it before "Zevro send" without leaving the app you are in.
-It stays until you say "preview" again, send or clear the prompt, or the
-prompt goes a minute without changing. The choice persists. It is drawn in its own borderless
+the whole prompt (live text in amber), floating above other windows, so you
+can review it before "Zevro send" without leaving the app you are in. Drag
+it anywhere; the spot is remembered until the app quits. A status line
+along its bottom edge keeps the last voice outcome ("Voice: send", or in
+red "Unknown voice command …") so a discarded command is not missed, and a
+spinner shows while an AI clean-up, enhance or tool request is running. It
+stays until you say "preview" again, send or clear the prompt, or the
+prompt goes a minute without changing. With **Preview: Open while
+listening** on in Settings, it opens whenever listening starts and closes
+when listening stops (with no idle close in between), which pairs well with
+turning CC off. The choice persists. It is drawn in its own borderless
 viewport, which is why the main window is created transparent (its panels
 paint their own opaque backgrounds).
 

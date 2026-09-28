@@ -937,7 +937,9 @@ impl eframe::App for PromptBoxApp {
         let ctx = ui.ctx().clone();
         let area = self.overlay_area(&ctx);
         crate::caption::draw(&mut self.voice, self.editor.core(), &ctx, area);
-        crate::preview::draw(&mut self.editor, &ctx, area);
+        let listening = self.voice.is_live() || self.voice.is_demo_running();
+        let auto = self.editor.settings().auto_preview;
+        crate::preview::draw(&mut self.editor, &ctx, area, listening, auto);
     }
 
     /// Fully transparent: the window's panels paint their own opaque
