@@ -110,8 +110,9 @@ spinner shows while an AI clean-up, enhance or tool request is running. It
 stays until you say "preview" again, send or clear the prompt, or the
 prompt goes a minute without changing. With **Preview: Open while
 listening** on in Settings, it opens whenever listening starts and closes
-when listening stops (with no idle close in between), which pairs well with
-turning CC off. The choice persists. It is drawn in its own borderless
+when listening stops; in between there is no idle close and send or clear
+leave it up (only "Zevro preview" hides it), which pairs well with turning
+CC off. The choice persists. It is drawn in its own borderless
 viewport, which is why the main window is created transparent (its panels
 paint their own opaque backgrounds).
 

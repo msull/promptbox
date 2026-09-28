@@ -426,6 +426,11 @@ impl Editor {
         self.core.set_preview_open(open);
     }
 
+    /// See [`AppCore::set_preview_sticky`].
+    pub fn set_preview_sticky(&mut self, sticky: bool) {
+        self.core.set_preview_sticky(sticky);
+    }
+
     /// Skips the editor's clock forward (tests only; the UI never calls this).
     pub fn advance_time(&mut self, by: Duration) {
         self.time_offset += by;

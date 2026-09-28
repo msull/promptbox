@@ -103,6 +103,9 @@ pub fn draw(app: &mut Editor, ctx: &egui::Context, area: Rect, listening: bool, 
     if let Some(open) = app.preview.auto_transition(auto, listening) {
         app.set_preview_open(open);
     }
+    // While auto mode is listening, send and clear must not take the
+    // panel away; it simply shows the (now empty) prompt.
+    app.set_preview_sticky(auto && listening && app.preview.auto_opened);
     if !app.core().preview_open() {
         app.preview.rendered.clear();
         app.preview.anchor = None;

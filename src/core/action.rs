@@ -309,8 +309,10 @@ pub struct AppCore {
     /// acknowledge (the caption overlay flashes it).
     heard_command: Option<HeardCommand>,
     /// The on-screen preview of the whole prompt is showing ("Zevro
-    /// preview" toggles it; send and clear close it).
+    /// preview" toggles it; send and clear close it unless it is sticky).
     preview_open: bool,
+    /// Auto-preview is holding the panel open: send and clear leave it up.
+    preview_sticky: bool,
     pending: Option<Pending>,
     projects: Vec<Project>,
     selected_project: usize,
@@ -352,6 +354,7 @@ impl AppCore {
             toast: None,
             heard_command: None,
             preview_open: false,
+            preview_sticky: false,
             pending: None,
             projects: default_projects(),
             selected_project: 0,
@@ -405,6 +408,12 @@ impl AppCore {
     /// period of no changes).
     pub fn set_preview_open(&mut self, open: bool) {
         self.preview_open = open;
+    }
+
+    /// While sticky (auto-preview is listening), send and clear do not
+    /// close the preview; only "Zevro preview" does.
+    pub fn set_preview_sticky(&mut self, sticky: bool) {
+        self.preview_sticky = sticky;
     }
 
     /// The latest command utterance; compare `seq` to notice a new one.
@@ -633,7 +642,7 @@ impl AppCore {
                 self.show_toast(format!("Save failed: {e}. Prompt kept."), true, now.mono);
             }
             AppAction::SendPrompt => {
-                self.preview_open = false;
+                self.preview_open = self.preview_sticky && self.preview_open;
                 self.begin_copy_or_send(PendingKind::Send, now, &mut effects);
             }
             // A delivery takes the clipboard's place in the pending record:
@@ -679,7 +688,7 @@ impl AppCore {
                 self.show_toast(format!("Could not read history: {e}"), true, now.mono);
             }
             AppAction::ClearPrompt => {
-                self.preview_open = false;
+                self.preview_open = self.preview_sticky && self.preview_open;
                 if !self.doc.is_empty() {
                     self.doc.replace_all("");
                     self.mark_dirty(now.mono);
@@ -2396,6 +2405,17 @@ mod tests {
         core.set_preview_open(true);
         core.dispatch(AppAction::SendPrompt, Clock::at(7));
         assert!(!core.preview_open(), "send closes it");
+        // Sticky (auto-preview while listening): clear and send leave it up.
+        typed(&mut core, "Again.", 8);
+        core.set_preview_sticky(true);
+        core.set_preview_open(true);
+        core.dispatch(AppAction::ClearPrompt, Clock::at(9));
+        assert!(core.preview_open(), "sticky survives clear");
+        typed(&mut core, "Once more.", 10);
+        core.dispatch(AppAction::SendPrompt, Clock::at(11));
+        assert!(core.preview_open(), "sticky survives send");
+        final_at(&mut core, 4, 4, "Zevro preview", 12);
+        assert!(!core.preview_open(), "the voice toggle still hides it");
     }
 
     #[test]
