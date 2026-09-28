@@ -5,8 +5,9 @@
 //! Opened by "Zevro preview", or automatically while listening when the
 //! setting is on. It closes when "preview" is said again, the prompt is
 //! sent or cleared, or (outside auto mode) the prompt has not changed for
-//! a while. The panel is draggable, so it is not click-through; its
-//! position is remembered for the session.
+//! a while. The panel is draggable and resizable from its right and
+//! bottom edges, so it is not click-through; position and size are
+//! remembered for the session.
 
 use egui::text::{LayoutJob, TextFormat};
 use egui::{
@@ -27,6 +28,9 @@ const FONT_SIZE: f32 = 22.0;
 const STATUS_FONT_SIZE: f32 = 15.0;
 const STATUS_HEIGHT: f32 = 26.0;
 const PADDING: f32 = 28.0;
+/// Width of the resize grab zones along the right and bottom edges.
+const GRIP: f32 = 12.0;
+const MIN_SIZE: Vec2 = Vec2::new(360.0, 160.0);
 const BOX_ALPHA: u8 = 215;
 const LIVE_COLOR: Color32 = Color32::from_rgb(255, 200, 110);
 const STATUS_COLOR: Color32 = Color32::from_rgb(170, 200, 255);
@@ -44,6 +48,10 @@ pub struct PreviewState {
     /// Position the open panel was created at; fixed while it stays open so
     /// the OS drag is not fought every frame.
     anchor: Option<Pos2>,
+    /// Size after the panel was resized (kept for the session).
+    remembered_size: Option<Vec2>,
+    /// Size the open panel was created with; fixed while it stays open.
+    anchor_size: Option<Vec2>,
     /// Whether listening was on last frame, for auto open/close.
     listening_was: bool,
     /// Whether the current showing was opened by auto mode.
@@ -109,6 +117,7 @@ pub fn draw(app: &mut Editor, ctx: &egui::Context, area: Rect, listening: bool, 
     if !app.core().preview_open() {
         app.preview.rendered.clear();
         app.preview.anchor = None;
+        app.preview.anchor_size = None;
         app.preview.auto_opened = false;
         return;
     }
@@ -136,10 +145,14 @@ pub fn draw(app: &mut Editor, ctx: &egui::Context, area: Rect, listening: bool, 
         1000
     }));
 
-    let size = Vec2::new(
+    let default_size = Vec2::new(
         (area.width() * WIDTH_FRACTION).min(MAX_WIDTH),
         area.height() * HEIGHT_FRACTION,
     );
+    let size = *app
+        .preview
+        .anchor_size
+        .get_or_insert_with(|| app.preview.remembered_size.unwrap_or(default_size));
     let default_pos = area.center() - size / 2.0 - Vec2::new(0.0, 40.0);
     let anchor = *app
         .preview
@@ -159,7 +172,8 @@ pub fn draw(app: &mut Editor, ctx: &egui::Context, area: Rect, listening: bool, 
             .with_mouse_passthrough(false)
             .with_active(false)
             .with_taskbar(false)
-            .with_resizable(false)
+            .with_resizable(true)
+            .with_min_inner_size(MIN_SIZE)
             .with_inner_size(size)
             .with_position(anchor),
         |ui, _class| {
@@ -171,17 +185,59 @@ pub fn draw(app: &mut Editor, ctx: &egui::Context, area: Rect, listening: bool, 
                 status.as_ref(),
                 busy,
             );
-            // Drag anywhere on the panel moves the window; the OS reports
-            // where it ended up.
-            let response = ui.interact(ui.max_rect(), ui.id().with("drag"), Sense::drag());
-            if response.drag_started() {
-                ui.ctx().send_viewport_cmd(ViewportCommand::StartDrag);
-            }
-            ui.ctx().input(|i| i.viewport().outer_rect.map(|r| r.min))
+            move_or_resize(ui);
+            ui.ctx()
+                .input(|i| i.viewport().outer_rect.map(|r| (r.min, r.size())))
         },
     );
-    if let Some(pos) = moved {
+    if let Some((pos, size)) = moved {
         app.preview.remembered_pos = Some(pos);
+        app.preview.remembered_size = Some(size);
+    }
+}
+
+/// Edges resize, anywhere else drags; the OS does the work and reports
+/// where the window ended up.
+fn move_or_resize(ui: &mut egui::Ui) {
+    let full = ui.max_rect();
+    let right = Rect::from_min_max(Pos2::new(full.max.x - GRIP, full.min.y), full.max);
+    let bottom = Rect::from_min_max(Pos2::new(full.min.x, full.max.y - GRIP), full.max);
+    let corner = right.intersect(bottom);
+    let grips = [
+        (
+            corner,
+            egui::ResizeDirection::SouthEast,
+            egui::CursorIcon::ResizeNwSe,
+        ),
+        (
+            right,
+            egui::ResizeDirection::East,
+            egui::CursorIcon::ResizeHorizontal,
+        ),
+        (
+            bottom,
+            egui::ResizeDirection::South,
+            egui::CursorIcon::ResizeVertical,
+        ),
+    ];
+    let mut resizing = false;
+    for (i, (zone, dir, cursor)) in grips.into_iter().enumerate() {
+        let r = ui.interact(zone, ui.id().with(("grip", i)), Sense::drag());
+        if r.hovered() || r.dragged() {
+            ui.ctx().set_cursor_icon(cursor);
+            resizing = true;
+        }
+        if r.drag_started() {
+            ui.ctx()
+                .send_viewport_cmd(ViewportCommand::BeginResize(dir));
+            return;
+        }
+    }
+    if !resizing {
+        let r = ui.interact(full, ui.id().with("drag"), Sense::drag());
+        if r.drag_started() {
+            ui.ctx().send_viewport_cmd(ViewportCommand::StartDrag);
+        }
     }
 }
 

@@ -103,7 +103,8 @@ was not understood) before it disappears, so you can see what was heard.
 **Zevro preview** opens a larger panel in the middle of that screen with
 the whole prompt (live text in amber), floating above other windows, so you
 can review it before "Zevro send" without leaving the app you are in. Drag
-it anywhere; the spot is remembered until the app quits. A status line
+it anywhere, and resize it from its right or bottom edge; position and
+size are remembered until the app quits. A status line
 along its bottom edge keeps the last voice outcome ("Voice: send", or in
 red "Unknown voice command …") so a discarded command is not missed, and a
 spinner shows while an AI clean-up, enhance or tool request is running. It
